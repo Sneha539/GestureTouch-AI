@@ -1,0 +1,729 @@
+/* App-level layout — no globals modified here */
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+/* ─── Top Nav ─────────────────────────────────────────────────── */
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 40px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(250,250,250,0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.nav-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--ink);
+}
+.nav-logo-mark {
+  width: 32px;
+  height: 32px;
+  background: var(--ink);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.nav-logo-mark svg { color: white; }
+.nav-logo-text { font-size: 0.95rem; font-weight: 700; letter-spacing: -0.02em; }
+
+.nav-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--ink-muted);
+  font-weight: 500;
+}
+
+.nav-actions { display: flex; gap: 10px; }
+
+/* ─── Main grid ───────────────────────────────────────────────── */
+.main-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  grid-template-rows: 1fr;
+  gap: 24px;
+  padding: 24px 40px 40px;
+  max-width: 1600px;
+  width: 100%;
+  margin: 0 auto;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .main-grid {
+    grid-template-columns: 1fr;
+    padding: 16px 20px 32px;
+  }
+}
+
+/* ─── Video Panel ─────────────────────────────────────────────── */
+.video-panel {
+  position: relative;
+  aspect-ratio: 4/3;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  box-shadow: var(--shadow-float);
+  background: #0A0A0B;
+}
+
+.video-panel video,
+.video-panel canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.video-panel video {
+  transform: scaleX(-1); /* mirror for natural interaction */
+}
+
+/* Landmark canvas sits on top — pointer-events none so clicks pass through */
+.landmark-canvas {
+  pointer-events: none;
+  transform: scaleX(-1);
+}
+
+/* Inactive overlay */
+.video-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: #0A0A0B;
+  color: #FFFFFF;
+  z-index: 10;
+  transition: opacity 0.4s ease;
+}
+.video-overlay.hidden { opacity: 0; pointer-events: none; }
+
+.overlay-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: rgba(255,255,255,0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.overlay-title { font-size: 1.1rem; font-weight: 600; color: #FFFFFF; }
+.overlay-sub   { font-size: 0.8rem; color: rgba(255,255,255,0.45); }
+
+/* Top-left camera label */
+.video-label {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(10,10,11,0.55);
+  backdrop-filter: blur(8px);
+  padding: 6px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: rgba(255,255,255,0.8);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* FPS counter */
+.fps-badge {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 5;
+  background: rgba(10,10,11,0.55);
+  backdrop-filter: blur(8px);
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.8);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Pinch point cursor */
+.pinch-cursor {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 20;
+  transform: translate(-50%, -50%) scale(1);
+  transition: transform 100ms ease, opacity 100ms ease;
+  mix-blend-mode: multiply;
+}
+.pinch-cursor.inactive {
+  transform: translate(-50%, -50%) scale(0.3);
+  opacity: 0;
+}
+
+/* ─── Side Panel ──────────────────────────────────────────────── */
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ─── Gesture Status Card ─────────────────────────────────────── */
+.status-card {
+  padding: 28px;
+}
+
+.status-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.status-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/* Big gesture name */
+.gesture-display {
+  text-align: center;
+  padding: 32px 0 24px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.gesture-emoji { font-size: 3.5rem; line-height: 1; display: block; margin-bottom: 12px; }
+.gesture-name  {
+  font-size: 1.4rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  text-transform: capitalize;
+}
+.gesture-sub   { font-size: 0.78rem; color: var(--ink-muted); margin-top: 4px; }
+
+/* Landmark count row */
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 0;
+}
+.stat-row + .stat-row { border-top: 1px solid var(--ink-faint); }
+.stat-key   { font-size: 0.82rem; color: var(--ink-muted); }
+.stat-val   { font-size: 0.82rem; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* Pinch strength bar */
+.strength-bar-track {
+  height: 4px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  margin-top: 8px;
+  overflow: hidden;
+}
+.strength-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 4px;
+  transition: width 80ms linear;
+}
+
+/* ─── Swipe Log Card ──────────────────────────────────────────── */
+.log-card { padding: 24px; }
+.log-card-title { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); margin-bottom: 16px; }
+
+.log-list { display: flex; flex-direction: column; gap: 8px; }
+.log-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: 0.82rem;
+}
+.log-entry-icon { font-size: 1.1rem; flex-shrink: 0; }
+.log-entry-text { color: var(--ink); font-weight: 500; flex: 1; }
+.log-entry-time { color: var(--ink-muted); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+
+.log-empty {
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 0.82rem;
+  padding: 24px 0;
+}
+
+/* ─── Controls Card ───────────────────────────────────────────── */
+.controls-card { padding: 24px; }
+.controls-title { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); margin-bottom: 16px; }
+.controls-grid  { display: flex; flex-direction: column; gap: 8px; }
+
+.control-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.control-label  { font-size: 0.82rem; color: var(--ink); font-weight: 500; }
+.control-kbd    {
+  font-size: 0.7rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  padding: 3px 8px;
+  border-radius: 6px;
+  color: var(--ink-muted);
+  font-weight: 600;
+}
+
+/* ─── Demo Content area (for swipe/scroll demo) ───────────────── */
+.demo-scroll-zone {
+  overflow: hidden;
+  max-height: 220px;
+  position: relative;
+}
+.demo-scroll-inner {
+  transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+}
+.demo-card-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  margin-bottom: 8px;
+  cursor: default;
+}
+.demo-card-item.highlighted {
+  background: var(--accent-soft);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.demo-card-num {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--ink);
+  flex-shrink: 0;
+}
+.demo-card-text { font-size: 0.82rem; color: var(--ink); font-weight: 500; }
+.demo-card-sub  { font-size: 0.72rem; color: var(--ink-muted); }
+
+/* ─── Grab cursor ─────────────────────────────────────────────── */
+.grab-cursor {
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2.5px solid rgba(255,255,255,0.7);
+  background: rgba(255,255,255,0.12);
+  pointer-events: none;
+  z-index: 20;
+  transform: translate(-50%, -50%);
+  transition: transform 60ms linear, border-color 120ms ease, background 120ms ease;
+}
+.grab-cursor.grabbing {
+  border-color: var(--accent);
+  background: rgba(255,77,28,0.2);
+  transform: translate(-50%, -50%) scale(1.35);
+}
+
+/* ─── Gesture display grab state ─────────────────────────────── */
+.gesture-display.grabbing {
+  background: var(--accent-soft);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ─── Kanban board ────────────────────────────────────────────── */
+.kanban-card { padding: 24px; }
+.kanban-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+.kanban-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  min-height: 180px;
+}
+
+.kanban-col {
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 140px;
+  transition: background 150ms ease, outline 150ms ease;
+}
+.kanban-col.drop-target {
+  background: rgba(255,77,28,0.06);
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+.kanban-col-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.col-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.col-count {
+  margin-left: auto;
+  background: rgba(0,0,0,0.07);
+  border-radius: 20px;
+  padding: 1px 7px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: inherit;
+}
+
+.kanban-tile {
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 12px 14px;
+  box-shadow: var(--shadow-sm);
+  cursor: default;
+  transition: box-shadow var(--transition), transform var(--transition);
+  user-select: none;
+}
+.kanban-tile:hover {
+  box-shadow: var(--shadow-float);
+  transform: translateY(-1px);
+}
+.tile-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 3px;
+}
+.tile-sub { font-size: 0.72rem; color: var(--ink-muted); }
+
+.kanban-placeholder {
+  border: 2px dashed var(--ink-faint);
+  border-radius: 10px;
+  height: 56px;
+  opacity: 0.5;
+  flex-shrink: 0;
+}
+
+.kanban-drop-zone {
+  border: 2px dashed var(--accent);
+  border-radius: 10px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
+.dragging-ghost {
+  background: var(--surface) !important;
+  box-shadow: 0 40px 80px rgba(0,0,0,0.18), 0 12px 24px rgba(0,0,0,0.1) !important;
+  border: 2px solid var(--accent);
+  opacity: 0.96;
+}
+
+/* ─── Nav center badges ────────────────────────────────────────── */
+.nav-center-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ─── Volume HUD (inside video panel) ─────────────────────────── */
+.vol-hud {
+  position: absolute;
+  left: 20px;
+  bottom: 20px;
+  z-index: 15;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: none;
+}
+.vol-hud-track {
+  width: 6px;
+  height: 80px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 6px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.vol-hud-fill {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 6px;
+  transition: height 80ms linear;
+}
+.vol-hud-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #FFFFFF;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.5);
+  margin-bottom: 2px;
+}
+
+/* ─── Hold progress HUD (inside video panel) ──────────────────── */
+.hold-hud {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  background: rgba(10,10,11,0.7);
+  backdrop-filter: blur(8px);
+  padding: 8px 16px;
+  border-radius: var(--radius-pill);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  pointer-events: none;
+  min-width: 160px;
+}
+.hold-hud-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.85);
+  letter-spacing: 0.04em;
+}
+.hold-bar-track {
+  width: 100%;
+  height: 3px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.hold-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 60ms linear;
+}
+
+/* ─── System Control Card ─────────────────────────────────────── */
+.sys-card {
+  padding: 24px;
+}
+.sys-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+/* Bridge offline hint */
+.bridge-offline-hint {
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+.bridge-offline-hint code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  color: var(--ink);
+  background: rgba(0,0,0,0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* Volume row */
+.sys-vol-row {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  padding: 12px 0;
+}
+.sys-vol-bar-wrap {
+  flex-shrink: 0;
+}
+.sys-vol-bar-track {
+  width: 8px;
+  height: 72px;
+  background: var(--surface-2);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+.sys-vol-bar-fill {
+  width: 100%;
+  background: var(--accent);
+  border-radius: 8px;
+  transition: height 80ms linear;
+}
+.sys-vol-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sys-vol-num {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.sys-vol-label-text {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-muted);
+}
+.sys-vol-hint {
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+  margin-top: 4px;
+}
+
+/* OS Action rows */
+.sys-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sys-action-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  transition: background 120ms ease, outline 120ms ease;
+}
+.sys-action-row.primed {
+  background: var(--accent-soft);
+  outline: 1.5px solid var(--accent);
+  outline-offset: -1.5px;
+}
+.sys-action-emoji {
+  font-size: 1.3rem;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.sys-action-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.sys-action-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.sys-action-hint {
+  font-size: 0.7rem;
+  color: var(--ink-muted);
+}
+.hold-track {
+  height: 3px;
+  background: rgba(0,0,0,0.08);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.hold-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 60ms linear;
+}
+.sys-action-sent {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--green);
+  flex-shrink: 0;
+}
+
+/* Last action pill */
+.sys-last-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 8px 12px;
+  background: rgba(22,163,74,0.08);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--green);
+}
+.sys-last-time {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
