@@ -1,0 +1,147 @@
+/* =========================================================
+   GestureOS — Antigravity Design System
+   Rules: NO gradients. NO glows. NO borders on cards.
+   Shadows ONLY via large diffused low-opacity box-shadow.
+   ========================================================= */
+
+/* --- Tokens --- */
+:root {
+  --bg:           #FAFAFA;
+  --surface:      #FFFFFF;
+  --surface-2:    #F4F4F5;
+  --ink:          #0A0A0B;
+  --ink-muted:    #6B7280;
+  --ink-faint:    #D1D5DB;
+  --accent:       #FF4D1C;          /* Stark matte orange */
+  --accent-soft:  rgba(255,77,28,.08);
+  --green:        #16A34A;
+  --amber:        #D97706;
+  --red:          #DC2626;
+
+  /* Shadow system — diffused, low opacity, NO colors */
+  --shadow-float:  0 30px 60px rgba(0,0,0,0.05), 0 8px 24px rgba(0,0,0,0.04);
+  --shadow-lift:   0 40px 80px rgba(0,0,0,0.07), 0 12px 32px rgba(0,0,0,0.05);
+  --shadow-sm:     0 4px 16px rgba(0,0,0,0.04);
+
+  --radius-card:   20px;
+  --radius-pill:   100px;
+  --radius-sm:     10px;
+
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+
+  --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* --- Reset --- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--ink);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* --- Typography Scale --- */
+h1 { font-size: clamp(2rem, 4vw, 3.25rem); font-weight: 700; letter-spacing: -0.03em; line-height: 1.1; }
+h2 { font-size: clamp(1.25rem, 2.5vw, 1.75rem); font-weight: 600; letter-spacing: -0.02em; }
+h3 { font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
+p  { line-height: 1.65; color: var(--ink-muted); }
+
+/* --- Floating Surface (the "antigravity" card) --- */
+.float-card {
+  background: var(--surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-float);
+  transition: box-shadow var(--transition), transform var(--transition);
+}
+.float-card:hover {
+  box-shadow: var(--shadow-lift);
+  transform: translateY(-2px);
+}
+
+/* --- Minimal Button --- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--ink);
+  color: #FFFFFF;
+}
+.btn-primary:hover { background: #222; transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.btn-primary:active { transform: translateY(0); }
+
+.btn-ghost {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.btn-ghost:hover { background: var(--ink-faint); }
+
+.btn-accent {
+  background: var(--accent);
+  color: #FFFFFF;
+}
+.btn-accent:hover { filter: brightness(0.92); transform: translateY(-1px); }
+
+/* --- Status Dot --- */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  flex-shrink: 0;
+}
+.status-dot.active   { background: var(--green); }
+.status-dot.warning  { background: var(--amber); }
+.status-dot.error    { background: var(--red); }
+.status-dot.accent   { background: var(--accent); }
+
+/* --- Badge --- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: var(--surface-2);
+  color: var(--ink-muted);
+}
+.badge.active {
+  background: rgba(22,163,74,0.1);
+  color: var(--green);
+}
+.badge.accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* --- Divider --- */
+.divider {
+  height: 1px;
+  background: var(--ink-faint);
+  opacity: 0.4;
+  border: none;
+}
+
+/* --- Scrollbar --- */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--ink-faint); border-radius: 4px; }
