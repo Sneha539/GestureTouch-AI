@@ -306,10 +306,11 @@ Then open **http://localhost:5173** in your browser.
 
 ## 👥 Team / Contributors
 
-| Name | Role |
+| Name | Contributions |
 |---|---|
-| **Sneha** | Project Lead, Frontend Architect |
-| **Sahil** | Gesture Engine & OS Bridge Engineer |
+| **Sahil Srivastava** ⭐ | Core architecture & majority of implementation — Gesture Engine (`gestureEngine.js`), WebSocket OS Bridge (`useSystemBridge.js` + `server.py`), MediaPipe RAF pipeline, landmark smoothing (EMA), pinch/swipe/pose detection, volume control, drag-and-drop Kanban logic, hold-progress HUDs, full UI integration (`App.jsx`), Python backend (pycaw, Spotify, Chrome), Vite build config, `.gitignore`, deployment |
+| **Sneha Singh** | Project ideation, UI layout direction, `App.css` component styling, Kanban board design, `index.css` design system tokens, README co-authoring |
+| **Riya Raghav** | Testing & QA, gesture accuracy validation, documentation review, demo coordination |
 
 ---
 
