@@ -54,9 +54,9 @@ const INIT_TILES = [
 ];
 
 const COLS = [
-  { label: 'Queue',       color: '#6B7280' },
-  { label: 'In Progress', color: '#D97706' },
-  { label: 'Done',        color: '#16A34A' },
+  { label: 'Queue',       color: '#5F646B' },
+  { label: 'In Progress', color: '#F0A429' },
+  { label: 'Done',        color: '#3DD68C' },
 ];
 
 // ─── Landmark drawing ─────────────────────────────────────────────────────────
@@ -76,11 +76,11 @@ function drawLandmarks(ctx, lm, isGrabbing, isPointing, volume) {
   const px = (l) => (1 - l.x) * ctx.canvas.width;
   const py = (l) => l.y * ctx.canvas.height;
 
-  const lineColor = isGrabbing  ? 'rgba(255,77,28,0.9)'
-                  : isPointing  ? 'rgba(255,255,255,0.9)'
-                  : 'rgba(255,255,255,0.7)';
+  const lineColor = isGrabbing  ? 'rgba(255,122,69,0.85)'
+                  : isPointing  ? 'rgba(76,141,255,0.9)'
+                  : 'rgba(76,141,255,0.55)';
 
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.5;
   ctx.strokeStyle = lineColor;
   CONNECTIONS.forEach(([a, b]) => {
     ctx.beginPath();
@@ -93,16 +93,18 @@ function drawLandmarks(ctx, lm, isGrabbing, isPointing, volume) {
     const isTip     = [4, 8, 12, 16, 20].includes(i);
     const isIndexTip = i === 8;
     ctx.beginPath();
-    ctx.arc(px(l), py(l), isTip ? 6 : 3.5, 0, Math.PI * 2);
-    ctx.fillStyle = isIndexTip && isPointing ? '#FF4D1C'
-                  : isTip && isGrabbing      ? '#FF4D1C'
-                  : isTip                    ? '#FFFFFF'
-                  : 'rgba(255,255,255,0.5)';
+    ctx.arc(px(l), py(l), isTip ? 5 : 3, 0, Math.PI * 2);
+    ctx.fillStyle = isIndexTip && isPointing ? '#FF7A45'
+                  : isTip && isGrabbing      ? '#FF7A45'
+                  : isTip                    ? '#4C8DFF'
+                  : 'rgba(76,141,255,0.4)';
     ctx.fill();
-    ctx.strokeStyle = (isIndexTip && isPointing) || (isTip && isGrabbing)
-      ? '#FF4D1C' : 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
+    if (isTip) {
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = isGrabbing ? 'rgba(255,122,69,0.6)' : 'rgba(76,141,255,0.6)';
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
   });
 
   // Volume guide line when pointing
@@ -111,7 +113,7 @@ function drawLandmarks(ctx, lm, isGrabbing, isPointing, volume) {
     const tipY = py(lm[8]);
     ctx.save();
     ctx.setLineDash([4, 6]);
-    ctx.strokeStyle = 'rgba(255,77,28,0.5)';
+    ctx.strokeStyle = 'rgba(255,122,69,0.5)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(tipX, tipY);
@@ -120,10 +122,295 @@ function drawLandmarks(ctx, lm, isGrabbing, isPointing, volume) {
     ctx.restore();
 
     // Volume label
-    ctx.font = 'bold 14px Inter, sans-serif';
-    ctx.fillStyle = '#FF4D1C';
+    ctx.font = 'bold 12px JetBrains Mono, monospace';
+    ctx.fillStyle = '#FF7A45';
     ctx.fillText(`${volume}%`, tipX + 10, tipY - 8);
   }
+}
+
+// ─── Hero: MediaPipe-accurate 21-point hand skeleton coordinates ───────────────
+// Normalized [0,1] space, shaped as an open right hand, palm facing camera.
+// Points ordered 0-20 matching MediaPipe Hand landmark indices.
+const HAND_POINTS = [
+  // 0 - WRIST
+  { x: 0.50, y: 0.88 },
+  // 1-4 - THUMB
+  { x: 0.36, y: 0.75 },
+  { x: 0.26, y: 0.64 },
+  { x: 0.18, y: 0.55 },
+  { x: 0.11, y: 0.45 },
+  // 5-8 - INDEX
+  { x: 0.42, y: 0.60 },
+  { x: 0.40, y: 0.44 },
+  { x: 0.40, y: 0.31 },
+  { x: 0.40, y: 0.18 },
+  // 9-12 - MIDDLE
+  { x: 0.52, y: 0.57 },
+  { x: 0.52, y: 0.40 },
+  { x: 0.52, y: 0.26 },
+  { x: 0.52, y: 0.13 },
+  // 13-16 - RING
+  { x: 0.62, y: 0.59 },
+  { x: 0.63, y: 0.43 },
+  { x: 0.63, y: 0.29 },
+  { x: 0.63, y: 0.17 },
+  // 17-20 - PINKY
+  { x: 0.71, y: 0.63 },
+  { x: 0.73, y: 0.50 },
+  { x: 0.74, y: 0.38 },
+  { x: 0.75, y: 0.27 },
+];
+
+const TIP_INDICES = new Set([4, 8, 12, 16, 20]);
+
+// ─── Constellation component ───────────────────────────────────────────────────
+function HandConstellation({ parallaxRef }) {
+  const svgRef = useRef(null);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+
+    // Parallax via mouse
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReduced) return;
+
+    const handleMouse = (e) => {
+      const cx = window.innerWidth / 2;
+      const cy = window.innerHeight / 2;
+      const dx = (e.clientX - cx) / cx;
+      const dy = (e.clientY - cy) / cy;
+      svg.style.transform = `translate(${dx * -8}px, ${dy * -6}px)`;
+    };
+
+    window.addEventListener('mousemove', handleMouse, { passive: true });
+    return () => window.removeEventListener('mousemove', handleMouse);
+  }, []);
+
+  const W = 360;
+  const H = 400;
+  const toSVG = (pt) => ({ x: pt.x * W, y: pt.y * H });
+
+  return (
+    <div className="constellation-wrap" ref={parallaxRef}>
+      <div className="constellation-corner tl" />
+      <div className="constellation-corner tr" />
+      <div className="constellation-corner bl" />
+      <div className="constellation-corner br" />
+
+      <svg
+        ref={svgRef}
+        className="constellation-svg"
+        viewBox={`0 0 ${W} ${H}`}
+        aria-hidden="true"
+        style={{ transition: 'transform 0.12s ease-out', willChange: 'transform' }}
+      >
+        {/* Connection lines */}
+        {CONNECTIONS.map(([a, b], idx) => {
+          const pa = toSVG(HAND_POINTS[a]);
+          const pb = toSVG(HAND_POINTS[b]);
+          const isPalm = (a >= 5 && b >= 5 && a <= 17 && b <= 17 && Math.abs(a - b) > 2);
+          return (
+            <line
+              key={idx}
+              className={`c-line ${isPalm ? 'palm' : ''}`}
+              x1={pa.x} y1={pa.y}
+              x2={pb.x} y2={pb.y}
+            />
+          );
+        })}
+
+        {/* Landmark dots */}
+        {HAND_POINTS.map((pt, i) => {
+          const { x, y } = toSVG(pt);
+          const isTip = TIP_INDICES.has(i);
+          const isWrist = i === 0;
+          return (
+            <circle
+              key={i}
+              className={`c-dot${isTip ? ' tip' : ''}${isWrist ? ' wrist' : ''}`}
+              cx={x}
+              cy={y}
+              r={isTip ? 4.5 : isWrist ? 4 : 2.5}
+            />
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
+// ─── Hero screen ───────────────────────────────────────────────────────────────
+function HeroScreen({ fps, camActive, onLaunch }) {
+  const [gesturesOpen, setGesturesOpen] = useState(false);
+  const parallaxRef = useRef(null);
+
+  const statusText = camActive && fps > 0
+    ? `tracking 21 landmarks · ${fps} fps · READY`
+    : camActive
+    ? `model loading · camera active · standby`
+    : `camera idle · awaiting launch`;
+
+  const handleLaunch = () => {
+    onLaunch();
+  };
+
+  return (
+    <div className="hero">
+      {/* ── Navigation ── */}
+      <nav className="hero-nav" aria-label="Main navigation">
+        <a className="hero-nav-logo" href="#" id="hero-logo">
+          <div className="hero-nav-logo-mark">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/>
+              <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/>
+              <path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/>
+              <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
+            </svg>
+          </div>
+          <span className="hero-nav-logo-text">GestureTouch-AI</span>
+        </a>
+
+        <div className="hero-nav-links" role="navigation">
+          <a href="#gestures" className="hero-nav-link" id="nav-link-gestures">Gestures</a>
+          <a href="#how-it-works" className="hero-nav-link" id="nav-link-how">How it works</a>
+          <a href="#technology" className="hero-nav-link" id="nav-link-tech">Technology</a>
+          <a
+            href="https://github.com"
+            className="hero-nav-link"
+            id="nav-link-github"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            GitHub
+          </a>
+          <button
+            className="hero-nav-cta"
+            onClick={handleLaunch}
+            id="nav-launch-btn"
+            aria-label="Launch the gesture tracking application"
+          >
+            Launch App →
+          </button>
+        </div>
+      </nav>
+
+      {/* ── Body ── */}
+      <div className="hero-body">
+
+        {/* Left: content */}
+        <div className="hero-content">
+
+          <div className="hero-micro-label" aria-label="System identifier">
+            [ HAND TRACKING / REAL-TIME CV ]
+          </div>
+
+          <h1 className="hero-headline">
+            See the gesture.<br />
+            Skip the touch.
+          </h1>
+
+          <p className="hero-description">
+            Real-time hand tracking that turns natural gestures into touch-free controls. 21 landmarks. Zero hardware.
+          </p>
+
+          {/* Terminal status */}
+          <div
+            className="hero-terminal"
+            role="status"
+            aria-live="polite"
+            aria-label="System status"
+            id="hero-terminal"
+          >
+            <span className="hero-terminal-prompt">&gt;</span>
+            <span className="hero-terminal-text" id="hero-terminal-text">
+              {statusText}
+            </span>
+            <span className="hero-terminal-cursor" aria-hidden="true" />
+          </div>
+
+          {/* CTAs */}
+          <div className="hero-cta-row">
+            <button
+              className="btn btn-primary"
+              onClick={handleLaunch}
+              id="hero-launch-btn"
+              aria-label="Launch the gesture tracking application"
+            >
+              Launch App →
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={() => setGesturesOpen(o => !o)}
+              id="hero-gestures-btn"
+              aria-expanded={gesturesOpen}
+              aria-controls="hero-gestures-reveal"
+            >
+              {gesturesOpen ? 'Hide gestures' : 'See supported gestures'}
+            </button>
+          </div>
+
+          {/* Gestures reveal */}
+          <div
+            id="hero-gestures-reveal"
+            className={`hero-gestures-reveal ${gesturesOpen ? 'open' : ''}`}
+            aria-hidden={!gesturesOpen}
+          >
+            <div className="hero-gestures-label">[ SUPPORTED GESTURES ]</div>
+            <div className="hero-gestures-list">
+              {[
+                ['🤌', 'Pinch'],
+                ['✌️', 'Peace'],
+                ['✊', 'Fist'],
+                ['🖐️', 'Open Hand'],
+                ['☝️', 'Point'],
+                ['🤙', 'Pinky'],
+                ['✦',  'Custom'],
+              ].map(([emoji, name]) => (
+                <div key={name} className="hero-gesture-chip" id={`gesture-chip-${name.toLowerCase().replace(/ /g, '-')}`}>
+                  <span aria-hidden="true">{emoji}</span>
+                  {name}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Stats */}
+          <div className="hero-stats" id="hero-stats" role="list" aria-label="Technical specifications">
+            <div className="hero-stat" role="listitem">
+              <span className="hero-stat-value">21</span>
+              <span className="hero-stat-label">Hand Landmarks</span>
+            </div>
+            <div className="hero-stat" role="listitem">
+              <span className="hero-stat-value">7</span>
+              <span className="hero-stat-label">Gestures</span>
+            </div>
+            <div className="hero-stat" role="listitem">
+              <span className="hero-stat-value">Real-Time</span>
+              <span className="hero-stat-label">Detection</span>
+            </div>
+            <div className="hero-stat" role="listitem">
+              <span className="hero-stat-value" style={{ fontSize: '1rem', paddingTop: '0.2rem' }}>MediaPipe</span>
+              <span className="hero-stat-label">Engine</span>
+            </div>
+          </div>
+
+          {/* Built with */}
+          <div className="hero-built-with" id="hero-built-with" aria-label="Built with">
+            BUILT WITH &nbsp;
+            <span>MediaPipe Hands · React · Vite</span>
+          </div>
+
+        </div>
+
+        {/* Right: constellation */}
+        <div className="hero-visual" aria-hidden="true">
+          <HandConstellation parallaxRef={parallaxRef} />
+        </div>
+
+      </div>
+    </div>
+  );
 }
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
@@ -151,9 +438,11 @@ export default function App() {
   const lastVolSentRef      = useRef(0);
 
   // React state
+  const [screen,     setScreen]     = useState('hero');  // 'hero' | 'transitioning' | 'app'
   const [camActive,  setCamActive]  = useState(false);
   const [camError,   setCamError]   = useState(null);
   const [gesture,    setGesture]    = useState('NONE');
+  const [prevGesture, setPrevGesture] = useState('NONE');
   const [pinchStr,   setPinchStr]   = useState(0);
   const [isPinched,  setIsPinched]  = useState(false);
   const [fps,        setFps]        = useState(0);
@@ -166,6 +455,7 @@ export default function App() {
   const [fistProg,   setFistProg]   = useState(0);          // 0-100 hold progress
   const [peaceProg,  setPeaceProg]  = useState(0);          // 0-100 hold progress
   const [sentAction, setSentAction] = useState(null);       // last OS action dispatched
+  const [gestureFlash, setGestureFlash] = useState(false);  // brief emphasis on gesture change
 
   // System bridge
   const { wsStatus, lastAction, sendCommand } = useSystemBridge();
@@ -239,7 +529,14 @@ export default function App() {
 
     setPinchStr(pinchInfo.strength);
     setIsPinched(pinchInfo.pinched);
-    setGesture(pose);
+    setGesture(prev => {
+      if (prev !== pose) {
+        setPrevGesture(prev);
+        setGestureFlash(true);
+        setTimeout(() => setGestureFlash(false), 350);
+      }
+      return pose;
+    });
 
     // ── Palm → screen coords ─────────────────────────────────────
     const palm    = getPalmCenter(lm);
@@ -445,6 +742,17 @@ export default function App() {
     };
   }, [onResults]);
 
+  // ── Screen transition ─────────────────────────────────────────────
+  const handleLaunch = useCallback(() => {
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReduced) {
+      setScreen('app');
+      return;
+    }
+    setScreen('transitioning');
+    setTimeout(() => setScreen('app'), 700);
+  }, []);
+
   // ─── Render ───────────────────────────────────────────────────────────────
   const meta        = GESTURE_META[gesture] || GESTURE_META.NONE;
   const draggedTile = tiles.find(t => t.id === dragState.tileId);
@@ -456,304 +764,405 @@ export default function App() {
   return (
     <div className="app">
 
-      {/* ── Nav ── */}
-      <nav className="nav">
-        <a className="nav-logo" href="#" id="nav-logo">
-          <div className="nav-logo-mark">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/>
-              <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/>
-              <path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/>
-              <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
-            </svg>
-          </div>
-          <span className="nav-logo-text">GestureOS</span>
-        </a>
+      {/* ── Transition overlay ── */}
+      <div
+        className={`transition-overlay ${screen === 'transitioning' ? 'active' : ''}`}
+        aria-hidden="true"
+      />
 
-        <div className="nav-center-badges">
-          <span className={`badge ${camActive ? 'active' : ''}`} id="cam-status-badge">
-            <span className={`status-dot ${camActive ? 'active' : 'warning'}`} />
-            {camActive ? 'Camera' : 'No Camera'}
-          </span>
-          <span className={`badge ${isBridgeUp ? 'active' : ''}`} id="bridge-status-badge">
-            <span className={`status-dot ${isBridgeUp ? 'active' : 'error'}`} />
-            {isBridgeUp ? 'Bridge Online' : wsStatus === 'connecting' ? 'Connecting…' : 'Bridge Offline'}
-          </span>
-          {fps > 0 && <span className="badge" id="fps-nav-badge">{fps} fps</span>}
-        </div>
-
-        <span className="badge accent" id="nav-version-badge">v2.0 · OS Control</span>
-      </nav>
-
-      {/* ── Main grid ── */}
-      <main className="main-grid">
-
-        {/* ── Left column ── */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-          {/* Video */}
-          <div className="video-panel" ref={videoPanelRef} id="video-panel">
-            {camActive && (
-              <div className="video-label" id="video-label">
-                <span className="status-dot active" />
-                Live · 640p
-              </div>
-            )}
-            {camActive && <div className="fps-badge" id="fps-badge">{fps} fps</div>}
-
-            {/* Volume HUD overlay */}
-            {volume !== null && (
-              <div className="vol-hud" id="vol-hud">
-                <div className="vol-hud-track">
-                  <div className="vol-hud-fill" style={{ height: `${volume}%` }} />
-                </div>
-                <span className="vol-hud-label">{volume}%</span>
-              </div>
-            )}
-
-            {/* Hold progress arc when relevant */}
-            {(fistProg > 0 || peaceProg > 0) && (
-              <div className="hold-hud" id="hold-hud">
-                <div className="hold-hud-label">
-                  {fistProg > 0 ? '✊ Chrome' : '✌️ Spotify'}
-                </div>
-                <div className="hold-bar-track">
-                  <div
-                    className="hold-bar-fill"
-                    style={{ width: `${fistProg > 0 ? fistProg : peaceProg}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* Grab cursor */}
-            <div
-              id="grab-cursor"
-              className={`grab-cursor ${dragState.active ? 'grabbing' : ''}`}
-              style={{
-                display: camActive && handCount > 0 ? 'block' : 'none',
-                left: dragState.active ? `${((dragState.x - (videoPanelRef.current?.getBoundingClientRect().left ?? 0)) / (videoPanelRef.current?.getBoundingClientRect().width ?? 1)) * 100}%` : '50%',
-                top:  dragState.active ? `${((dragState.y - (videoPanelRef.current?.getBoundingClientRect().top  ?? 0)) / (videoPanelRef.current?.getBoundingClientRect().height ?? 1)) * 100}%` : '50%',
-              }}
-            />
-
-            <video ref={videoRef} id="webcam-feed" playsInline muted />
-            <canvas ref={canvasRef} id="landmark-canvas" className="landmark-canvas" />
-
-            <div id="video-overlay" className={`video-overlay ${camActive ? 'hidden' : ''}`}>
-              <div className="overlay-icon">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/>
-                  <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/>
-                  <path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/>
-                  <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
-                </svg>
-              </div>
-              {camError
-                ? <><span className="overlay-title">Camera Unavailable</span><span className="overlay-sub">{camError}</span></>
-                : <><span className="overlay-title">Starting Camera…</span><span className="overlay-sub">Loading MediaPipe · Allow access</span></>
-              }
-            </div>
-          </div>
-
-          {/* Kanban */}
-          <div className="float-card kanban-card" id="kanban-zone">
-            <div className="kanban-header">
-              <span className="kanban-title">Drag &amp; Drop</span>
-              <span className="badge accent">✊ Grab · Open hand to drop</span>
-            </div>
-            <div className="kanban-board">
-              {COLS.map((col, colIdx) => (
-                <div key={colIdx} data-col-idx={colIdx}
-                  className={`kanban-col ${hoverCol === colIdx && dragState.active ? 'drop-target' : ''}`}>
-                  <div className="kanban-col-header" style={{ color: col.color }}>
-                    <span className="col-dot" style={{ background: col.color }} />
-                    {col.label}
-                    <span className="col-count">{tiles.filter(t => t.col === colIdx && t.id !== dragState.tileId).length}</span>
-                  </div>
-                  {tiles.filter(t => t.col === colIdx && t.id !== dragState.tileId).map(tile => (
-                    <div key={tile.id} data-tile-id={tile.id} className="kanban-tile" id={`tile-${tile.id}`}>
-                      <div className="tile-label">{tile.label}</div>
-                      <div className="tile-sub">{tile.sub}</div>
-                    </div>
-                  ))}
-                  {dragState.active && tiles.find(t => t.id === dragState.tileId)?.col === colIdx && <div className="kanban-placeholder" />}
-                  {hoverCol === colIdx && dragState.active && tiles.find(t => t.id === dragState.tileId)?.col !== colIdx && <div className="kanban-drop-zone">Drop here</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* ── Side panel ── */}
-        <aside className="side-panel" aria-label="Gesture status">
-
-          {/* ── System Control card ── */}
-          <div className="float-card sys-card" id="sys-control-card">
-            <div className="sys-card-header">
-              <span className="status-label">System Control</span>
-              <span className={`badge ${isBridgeUp ? 'active' : ''}`}>
-                <span className={`status-dot ${isBridgeUp ? 'active' : 'error'}`} />
-                {isBridgeUp ? 'Online' : 'Offline'}
-              </span>
-            </div>
-
-            {!isBridgeUp && (
-              <div className="bridge-offline-hint" id="bridge-offline-hint">
-                Run <code>python server.py</code> to enable OS control
-              </div>
-            )}
-
-            {/* Volume display */}
-            <div className="sys-vol-row">
-              <div className="sys-vol-bar-wrap">
-                <div className="sys-vol-bar-track">
-                  <div
-                    className="sys-vol-bar-fill"
-                    id="sys-vol-bar"
-                    style={{ height: volume !== null ? `${volume}%` : '0%' }}
-                  />
-                </div>
-              </div>
-              <div className="sys-vol-info">
-                <div className="sys-vol-num" id="sys-vol-num">
-                  {volume !== null ? `${volume}%` : '—'}
-                </div>
-                <div className="sys-vol-label-text">Volume</div>
-                <div className="sys-vol-hint">☝️ Point up/down</div>
-              </div>
-            </div>
-
-            <hr className="divider" style={{ margin: '16px 0' }} />
-
-            {/* OS Actions */}
-            <div className="sys-actions" id="sys-actions">
-
-              {/* Chrome */}
-              <div className={`sys-action-row ${fistProg > 0 ? 'primed' : ''}`} id="action-chrome">
-                <span className="sys-action-emoji">🌐</span>
-                <div className="sys-action-body">
-                  <div className="sys-action-name">Open Chrome</div>
-                  <div className="sys-action-hint">✊ Hold fist 1.5s</div>
-                  <div className="hold-track">
-                    <div className="hold-fill" style={{ width: `${fistProg}%` }} />
-                  </div>
-                </div>
-                {fistProg >= 100 && <span className="sys-action-sent">✓</span>}
-              </div>
-
-              {/* Spotify */}
-              <div className={`sys-action-row ${peaceProg > 0 ? 'primed' : ''}`} id="action-spotify">
-                <span className="sys-action-emoji">🎵</span>
-                <div className="sys-action-body">
-                  <div className="sys-action-name">Open Spotify</div>
-                  <div className="sys-action-hint">✌️ Hold peace 1.2s</div>
-                  <div className="hold-track">
-                    <div className="hold-fill" style={{ width: `${peaceProg}%` }} />
-                  </div>
-                </div>
-                {peaceProg >= 100 && <span className="sys-action-sent">✓</span>}
-              </div>
-            </div>
-
-            {/* Last dispatched action */}
-            {displayedAction && actionMeta && (
-              <div className="sys-last-action" id="sys-last-action">
-                <span>{actionMeta.emoji}</span>
-                <span>{actionMeta.label}</span>
-                <span className="sys-last-time">{displayedAction.time}</span>
-              </div>
-            )}
-          </div>
-
-          {/* ── Gesture status card ── */}
-          <div className="float-card status-card" id="gesture-status-card">
-            <div className="status-card-header">
-              <span className="status-label">Detected Gesture</span>
-              <span className={`badge ${handCount > 0 ? 'active' : ''}`} id="hand-count-badge">
-                <span className={`status-dot ${handCount > 0 ? 'active' : ''}`} />
-                {handCount} hand{handCount !== 1 ? 's' : ''}
-              </span>
-            </div>
-
-            <div className={`gesture-display ${dragState.active ? 'grabbing' : ''}`} id="gesture-display">
-              <span className="gesture-emoji" id="gesture-emoji">{meta.emoji}</span>
-              <div className="gesture-name" id="gesture-name">
-                {dragState.active ? `Dragging "${draggedTile?.label}"` : meta.label}
-              </div>
-              <div className="gesture-sub" id="gesture-sub">
-                {dragState.active ? 'Open hand to drop' : meta.sub}
-              </div>
-            </div>
-
-            <div style={{ marginTop: 20 }}>
-              <div className="stat-row">
-                <span className="stat-key">Pinch</span>
-                <span className="stat-val">{Math.round(pinchStr * 100)}%</span>
-              </div>
-              <div className="strength-bar-track">
-                <div className="strength-bar-fill" style={{ width: `${pinchStr * 100}%` }} />
-              </div>
-              <div className="stat-row">
-                <span className="stat-key">FPS</span>
-                <span className="stat-val" id="fps-stat">{fps}</span>
-              </div>
-              <div className="stat-row">
-                <span className="stat-key">Landmarks</span>
-                <span className="stat-val">{handCount > 0 ? '21/21' : '0/21'}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* ── Event log ── */}
-          <div className="float-card log-card" id="swipe-log-card">
-            <div className="log-card-title">Event Log</div>
-            <div className="log-list" id="swipe-log-list">
-              {swipeLog.length === 0
-                ? <div className="log-empty">No swipes yet</div>
-                : swipeLog.map(e => (
-                    <div key={e.id} className="log-entry" id={`log-entry-${e.id}`}>
-                      <span className="log-entry-icon">{SWIPE_ICONS[e.swipe]}</span>
-                      <span className="log-entry-text">Swipe {e.swipe}</span>
-                      <span className="log-entry-time">{e.timestamp}</span>
-                    </div>
-                  ))
-              }
-            </div>
-          </div>
-
-          {/* ── Gesture reference ── */}
-          <div className="float-card controls-card" id="gesture-ref-card">
-            <div className="controls-title">Gesture Map</div>
-            <div className="controls-grid">
-              {[
-                ['☝️', 'Point',     '→ Volume'],
-                ['✌️', 'Peace',     '→ Spotify (hold)'],
-                ['✊', 'Fist',      '→ Chrome (hold)'],
-                ['🤌', 'Pinch',     '→ Select / Drag'],
-                ['🖐️','Open Hand', '→ Drop'],
-              ].map(([emoji, name, hint]) => (
-                <div key={name} className="control-item" id={`ref-${name.toLowerCase().replace(/ /g, '-')}`}>
-                  <span className="control-label">{emoji} {name}</span>
-                  <span className="control-kbd">{hint}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-        </aside>
-      </main>
-
-      {/* Floating dragged ghost */}
-      {dragState.active && draggedTile && (
-        <div id="dragged-tile-ghost" className="kanban-tile dragging-ghost"
-          style={{ position: 'fixed', left: dragState.x, top: dragState.y,
-                   transform: 'translate(-50%,-50%) rotate(2deg) scale(1.06)',
-                   zIndex: 1000, pointerEvents: 'none', minWidth: 180 }}>
-          <div className="tile-label">{draggedTile.label}</div>
-          <div className="tile-sub">{draggedTile.sub}</div>
-        </div>
+      {/* ── Screen 1: Hero ── */}
+      {(screen === 'hero' || screen === 'transitioning') && (
+        <HeroScreen fps={fps} camActive={camActive} onLaunch={handleLaunch} />
       )}
+
+      {/* ── Screen 2: App ── */}
+      <div
+        className={`app-screen ${screen === 'app' ? 'visible' : ''}`}
+        style={{ display: screen === 'hero' ? 'none' : 'flex' }}
+        aria-hidden={screen !== 'app'}
+      >
+
+        {/* ── Nav ── */}
+        <nav className="nav" aria-label="Application navigation">
+          <button
+            className="nav-logo"
+            onClick={() => setScreen('hero')}
+            id="nav-logo"
+            aria-label="GestureTouch-AI — go back to home"
+            style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+          >
+            <div className="nav-logo-mark">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/>
+                <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/>
+                <path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/>
+                <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
+              </svg>
+            </div>
+            <div className="nav-logo-text">
+              <span className="nav-logo-name">GESTURETOUCH-AI</span>
+              <span className="nav-logo-tag">[ LIVE TRACKING ]</span>
+            </div>
+          </button>
+
+          <div className="nav-center-badges">
+            <span className={`badge ${camActive ? 'active' : ''}`} id="cam-status-badge">
+              <span className={`status-dot ${camActive ? 'active' : 'warning'}`} />
+              {camActive ? 'Camera Active' : 'No Camera'}
+            </span>
+            <span className={`badge ${isBridgeUp ? 'active' : ''}`} id="bridge-status-badge">
+              <span className={`status-dot ${isBridgeUp ? 'active' : 'error'}`} />
+              {isBridgeUp ? 'Bridge Online' : wsStatus === 'connecting' ? 'Connecting…' : 'Bridge Offline'}
+            </span>
+          </div>
+
+          <div className="nav-sys-state" aria-label="System state">
+            <span className={`nav-sys-item ${camActive ? 'active' : ''}`} id="nav-model-state">
+              MODEL: {camActive ? 'READY' : 'LOADING'}
+            </span>
+            <span className={`nav-sys-item ${camActive ? 'accent' : ''}`} id="nav-cam-state">
+              CAMERA: {camActive ? 'ACTIVE' : 'INIT'}
+            </span>
+            {fps > 0 && (
+              <span className="nav-sys-item accent" id="fps-nav-badge">
+                {fps} FPS
+              </span>
+            )}
+          </div>
+        </nav>
+
+        {/* ── Main grid ── */}
+        <main className="main-grid">
+
+          {/* ── Left column ── */}
+          <section style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+            {/* Camera */}
+            <div className="video-panel" ref={videoPanelRef} id="video-panel">
+
+              {/* Reticle corners */}
+              <div className="reticle-tr" aria-hidden="true" />
+              <div className="reticle-bl" aria-hidden="true" />
+
+              {camActive && (
+                <div className="video-label" id="video-label">
+                  <span className="status-dot active" aria-hidden="true" />
+                  LIVE · 640P
+                </div>
+              )}
+              {camActive && <div className="fps-badge" id="fps-badge">{fps}</div>}
+
+              {/* Volume HUD overlay */}
+              {volume !== null && (
+                <div className="vol-hud" id="vol-hud" role="status" aria-label={`Volume: ${volume}%`}>
+                  <div className="vol-hud-track">
+                    <div className="vol-hud-fill" style={{ height: `${volume}%` }} />
+                  </div>
+                  <span className="vol-hud-label">{volume}%</span>
+                </div>
+              )}
+
+              {/* Hold progress HUD */}
+              {(fistProg > 0 || peaceProg > 0) && (
+                <div className="hold-hud" id="hold-hud" role="status">
+                  <div className="hold-hud-label">
+                    {fistProg > 0 ? 'CHROME HOLD' : 'SPOTIFY HOLD'}
+                  </div>
+                  <div className="hold-bar-track">
+                    <div
+                      className="hold-bar-fill"
+                      style={{ width: `${fistProg > 0 ? fistProg : peaceProg}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Grab cursor */}
+              <div
+                id="grab-cursor"
+                className={`grab-cursor ${dragState.active ? 'grabbing' : ''}`}
+                aria-hidden="true"
+                style={{
+                  display: camActive && handCount > 0 ? 'block' : 'none',
+                  left: dragState.active ? `${((dragState.x - (videoPanelRef.current?.getBoundingClientRect().left ?? 0)) / (videoPanelRef.current?.getBoundingClientRect().width ?? 1)) * 100}%` : '50%',
+                  top:  dragState.active ? `${((dragState.y - (videoPanelRef.current?.getBoundingClientRect().top  ?? 0)) / (videoPanelRef.current?.getBoundingClientRect().height ?? 1)) * 100}%` : '50%',
+                }}
+              />
+
+              <video ref={videoRef} id="webcam-feed" playsInline muted aria-label="Webcam feed" />
+              <canvas ref={canvasRef} id="landmark-canvas" className="landmark-canvas" aria-hidden="true" />
+
+              <div id="video-overlay" className={`video-overlay ${camActive ? 'hidden' : ''}`} role="status">
+                <div className="overlay-icon" aria-hidden="true">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/>
+                    <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/>
+                    <path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/>
+                    <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>
+                  </svg>
+                </div>
+                {camError
+                  ? <><span className="overlay-title">Camera Unavailable</span><span className="overlay-sub">{camError}</span></>
+                  : <><span className="overlay-title">Initializing…</span><span className="overlay-sub">Loading MediaPipe · Allow camera access</span></>
+                }
+              </div>
+            </div>
+
+            {/* Controls bar */}
+            <div className="controls-bar" role="toolbar" aria-label="Camera controls">
+              <button
+                className="btn btn-primary btn-sm"
+                id="btn-reset"
+                onClick={() => {
+                  setGesture('NONE');
+                  setPinchStr(0);
+                  setHandCount(0);
+                  setSwipeLog([]);
+                  setVolume(null);
+                  setFistProg(0);
+                  setPeaceProg(0);
+                  setSentAction(null);
+                  setTiles(INIT_TILES);
+                }}
+                aria-label="Reset gesture state and event log"
+              >
+                Reset
+              </button>
+              <div
+                className="hero-terminal"
+                style={{ flex: 1, fontSize: '0.7rem', padding: '7px 12px' }}
+                role="status"
+                aria-live="polite"
+                aria-label="Live detection status"
+              >
+                <span className="hero-terminal-prompt">&gt;</span>
+                <span className="hero-terminal-text" style={{ fontSize: '0.7rem' }}>
+                  {handCount > 0
+                    ? `${gesture.replace('_', ' ')} detected · ${handCount} hand · ${fps} fps`
+                    : camActive
+                    ? `tracking active · awaiting hand · ${fps} fps`
+                    : `camera initializing…`
+                  }
+                </span>
+              </div>
+            </div>
+
+            {/* Kanban */}
+            <div className="float-card kanban-card" id="kanban-zone">
+              <div className="kanban-header">
+                <span className="kanban-title">[ DRAG WORKSPACE ]</span>
+                <span className="badge accent">✊ Grab · Open hand to drop</span>
+              </div>
+              <div className="kanban-board">
+                {COLS.map((col, colIdx) => (
+                  <div key={colIdx} data-col-idx={colIdx}
+                    className={`kanban-col ${hoverCol === colIdx && dragState.active ? 'drop-target' : ''}`}>
+                    <div className="kanban-col-header" style={{ color: col.color }}>
+                      <span className="col-dot" style={{ background: col.color }} />
+                      {col.label}
+                      <span className="col-count">{tiles.filter(t => t.col === colIdx && t.id !== dragState.tileId).length}</span>
+                    </div>
+                    {tiles.filter(t => t.col === colIdx && t.id !== dragState.tileId).map(tile => (
+                      <div key={tile.id} data-tile-id={tile.id} className="kanban-tile" id={`tile-${tile.id}`}>
+                        <div className="tile-label">{tile.label}</div>
+                        <div className="tile-sub">{tile.sub}</div>
+                      </div>
+                    ))}
+                    {dragState.active && tiles.find(t => t.id === dragState.tileId)?.col === colIdx && <div className="kanban-placeholder" />}
+                    {hoverCol === colIdx && dragState.active && tiles.find(t => t.id === dragState.tileId)?.col !== colIdx && <div className="kanban-drop-zone">Drop here</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          {/* ── Side panel ── */}
+          <aside className="side-panel" aria-label="Gesture status and controls">
+
+            {/* Gesture readout */}
+            <div className="float-card status-card" id="gesture-status-card">
+              <div className="status-card-header">
+                <span className="status-label">[ GESTURE ]</span>
+                <span className={`badge ${handCount > 0 ? 'active' : ''}`} id="hand-count-badge">
+                  <span className={`status-dot ${handCount > 0 ? 'active' : ''}`} aria-hidden="true" />
+                  {handCount} hand{handCount !== 1 ? 's' : ''}
+                </span>
+              </div>
+
+              <div className={`gesture-display ${dragState.active ? 'grabbing' : ''}`} id="gesture-display">
+                {/* emoji hidden in dark design — kept for DOM compat */}
+                <span className="gesture-emoji" id="gesture-emoji" aria-hidden="true">{meta.emoji}</span>
+                <div
+                  className={`gesture-name ${gestureFlash ? 'flash' : ''}`}
+                  id="gesture-name"
+                  aria-live="polite"
+                  aria-label={`Current gesture: ${dragState.active ? `Dragging ${draggedTile?.label}` : meta.label}`}
+                >
+                  {dragState.active ? `DRAG / ${draggedTile?.label?.toUpperCase()}` : meta.label.toUpperCase()}
+                </div>
+                <div className="gesture-sub" id="gesture-sub">
+                  {dragState.active ? 'Open hand to drop' : meta.sub}
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div className="stat-row">
+                  <span className="stat-key">CONFIDENCE</span>
+                  <span className="stat-val" id="pinch-stat">{Math.round(pinchStr * 100)}%</span>
+                </div>
+                <div className="strength-bar-track">
+                  <div className="strength-bar-fill" style={{ width: `${pinchStr * 100}%` }} />
+                </div>
+                <div className="stat-row">
+                  <span className="stat-key">FPS</span>
+                  <span className="stat-val" id="fps-stat">{fps}</span>
+                </div>
+                <div className="stat-row">
+                  <span className="stat-key">LANDMARKS</span>
+                  <span className="stat-val">{handCount > 0 ? '21 / 21' : '0 / 21'}</span>
+                </div>
+                <div className="stat-row">
+                  <span className="stat-key">MODEL</span>
+                  <span className="stat-val">MediaPipe</span>
+                </div>
+                <div className="stat-row">
+                  <span className="stat-key">STATUS</span>
+                  <span className="stat-val" style={{ color: camActive && handCount > 0 ? 'var(--green)' : camActive ? 'var(--accent)' : 'var(--text-dim)' }}>
+                    {camActive && handCount > 0 ? 'TRACKING' : camActive ? 'READY' : 'INIT'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* System Control card */}
+            <div className="float-card sys-card" id="sys-control-card">
+              <div className="sys-card-header">
+                <span className="status-label">[ OS CONTROL ]</span>
+                <span className={`badge ${isBridgeUp ? 'active' : 'danger'}`}>
+                  <span className={`status-dot ${isBridgeUp ? 'active' : 'error'}`} aria-hidden="true" />
+                  {isBridgeUp ? 'Online' : 'Offline'}
+                </span>
+              </div>
+
+              {!isBridgeUp && (
+                <div className="bridge-offline-hint" id="bridge-offline-hint" role="note">
+                  Run <code>python server.py</code> to enable OS control
+                </div>
+              )}
+
+              {/* Volume display */}
+              <div className="sys-vol-row">
+                <div className="sys-vol-bar-wrap">
+                  <div className="sys-vol-bar-track">
+                    <div
+                      className="sys-vol-bar-fill"
+                      id="sys-vol-bar"
+                      style={{ height: volume !== null ? `${volume}%` : '0%' }}
+                    />
+                  </div>
+                </div>
+                <div className="sys-vol-info">
+                  <div className="sys-vol-num" id="sys-vol-num" aria-live="polite" aria-label={`Volume: ${volume !== null ? volume + '%' : 'inactive'}`}>
+                    {volume !== null ? `${volume}%` : '—'}
+                  </div>
+                  <div className="sys-vol-label-text">VOLUME</div>
+                  <div className="sys-vol-hint">☝ Point up/down</div>
+                </div>
+              </div>
+
+              <div className="divider" style={{ margin: '12px 0' }} />
+
+              {/* OS Actions */}
+              <div className="sys-actions" id="sys-actions">
+                {/* Chrome */}
+                <div className={`sys-action-row ${fistProg > 0 ? 'primed' : ''}`} id="action-chrome" role="status">
+                  <span className="sys-action-emoji" aria-hidden="true">🌐</span>
+                  <div className="sys-action-body">
+                    <div className="sys-action-name">Open Chrome</div>
+                    <div className="sys-action-hint">✊ Hold fist 1.5s</div>
+                    <div className="hold-track">
+                      <div className="hold-fill" style={{ width: `${fistProg}%` }} />
+                    </div>
+                  </div>
+                  {fistProg >= 100 && <span className="sys-action-sent" aria-label="Command sent">✓</span>}
+                </div>
+
+                {/* Spotify */}
+                <div className={`sys-action-row ${peaceProg > 0 ? 'primed' : ''}`} id="action-spotify" role="status">
+                  <span className="sys-action-emoji" aria-hidden="true">🎵</span>
+                  <div className="sys-action-body">
+                    <div className="sys-action-name">Open Spotify</div>
+                    <div className="sys-action-hint">✌ Hold peace 1.2s</div>
+                    <div className="hold-track">
+                      <div className="hold-fill" style={{ width: `${peaceProg}%` }} />
+                    </div>
+                  </div>
+                  {peaceProg >= 100 && <span className="sys-action-sent" aria-label="Command sent">✓</span>}
+                </div>
+              </div>
+
+              {/* Last dispatched action */}
+              {displayedAction && actionMeta && (
+                <div className="sys-last-action" id="sys-last-action" role="status" aria-live="polite">
+                  <span aria-hidden="true">{actionMeta.emoji}</span>
+                  <span>{actionMeta.label}</span>
+                  <span className="sys-last-time">{displayedAction.time}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Event log */}
+            <div className="float-card log-card" id="swipe-log-card">
+              <div className="log-card-title">[ EVENT LOG ]</div>
+              <div className="log-list" id="swipe-log-list" role="log" aria-live="polite" aria-label="Swipe events">
+                {swipeLog.length === 0
+                  ? <div className="log-empty">no events yet</div>
+                  : swipeLog.map(e => (
+                      <div key={e.id} className="log-entry" id={`log-entry-${e.id}`}>
+                        <span className="log-entry-icon" aria-hidden="true">{SWIPE_ICONS[e.swipe]}</span>
+                        <span className="log-entry-text">SWIPE {e.swipe}</span>
+                        <span className="log-entry-time">{e.timestamp}</span>
+                      </div>
+                    ))
+                }
+              </div>
+            </div>
+
+            {/* Gesture map */}
+            <div className="float-card controls-card" id="gesture-ref-card">
+              <div className="controls-title">[ GESTURE MAP ]</div>
+              <div className="controls-grid">
+                {[
+                  ['☝', 'POINT',     '→ Volume'],
+                  ['✌', 'PEACE',     '→ Spotify'],
+                  ['✊', 'FIST',      '→ Chrome'],
+                  ['🤌', 'PINCH',    '→ Select'],
+                  ['🖐', 'OPEN HAND', '→ Drop'],
+                ].map(([emoji, name, hint]) => (
+                  <div key={name} className="control-item" id={`ref-${name.toLowerCase().replace(/ /g, '-')}`}>
+                    <span className="control-label">{emoji} {name}</span>
+                    <span className="control-kbd">{hint}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+          </aside>
+        </main>
+
+        {/* Floating dragged ghost */}
+        {dragState.active && draggedTile && (
+          <div id="dragged-tile-ghost" className="kanban-tile dragging-ghost"
+            style={{ position: 'fixed', left: dragState.x, top: dragState.y,
+                     transform: 'translate(-50%,-50%) rotate(2deg) scale(1.06)',
+                     zIndex: 1000, pointerEvents: 'none', minWidth: 160 }}
+            aria-hidden="true">
+            <div className="tile-label">{draggedTile.label}</div>
+            <div className="tile-sub">{draggedTile.sub}</div>
+          </div>
+        )}
+
+      </div>
     </div>
   );
 }
