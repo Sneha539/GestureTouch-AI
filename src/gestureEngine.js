@@ -5,25 +5,35 @@
  *
  * MediaPipe Hand Landmark indices (21 points):
  *   0  = WRIST
+ *   1  = THUMB_CMC
+ *   2  = THUMB_MCP
+ *   3  = THUMB_IP
  *   4  = THUMB_TIP
- *   8  = INDEX_FINGER_TIP
- *   12 = MIDDLE_FINGER_TIP
- *   16 = RING_FINGER_TIP
- *   20 = PINKY_TIP
  *   5  = INDEX_MCP  (knuckle base)
- *   5  = INDEX_FINGER_MCP  (knuckle)
- *   9  = MIDDLE_FINGER_MCP
- *   13 = RING_FINGER_MCP
+ *   6  = INDEX_PIP
+ *   7  = INDEX_DIP
+ *   8  = INDEX_TIP
+ *   9  = MIDDLE_MCP
+ *   10 = MIDDLE_PIP
+ *   11 = MIDDLE_DIP
+ *   12 = MIDDLE_TIP
+ *   13 = RING_MCP
+ *   14 = RING_PIP
+ *   15 = RING_DIP
+ *   16 = RING_TIP
  *   17 = PINKY_MCP
+ *   18 = PINKY_PIP
+ *   19 = PINKY_DIP
+ *   20 = PINKY_TIP
  */
 
 // ─── EMA Smoothing ────────────────────────────────────────────────────────────
 
 /**
  * Exponential Moving Average filter applied to a landmarks array.
- * @param {Array} prev   - previous smoothed landmarks (same shape as curr)
- * @param {Array} curr   - current raw landmarks from MediaPipe
- * @param {number} alpha - smoothing factor [0..1]; lower = smoother but more lag
+ * @param {Array|null} prev - previous smoothed landmarks (same shape as curr)
+ * @param {Array}      curr - current raw landmarks from MediaPipe
+ * @param {number}   alpha  - smoothing factor [0..1]; lower = smoother but more lag
  * @returns {Array} smoothed landmarks
  */
 export function smoothLandmarks(prev, curr, alpha = 0.4) {
@@ -83,6 +93,17 @@ function isFingerExtended(lm, tipIdx, pipIdx) {
 }
 
 /**
+ * Thumb direction: returns positive if tip is above MCP (screen y is inverted),
+ * negative if below. Used to distinguish thumbs-up vs thumbs-down.
+ */
+function getThumbDirection(lm) {
+  // lm[4] = THUMB_TIP, lm[2] = THUMB_MCP
+  // In MediaPipe normalized coords: y=0 is top, y=1 is bottom
+  // Thumb pointing UP means tip.y < wrist.y
+  return lm[4].y - lm[0].y; // negative = up, positive = down
+}
+
+/**
  * Returns an object { thumb, index, middle, ring, pinky } with boolean extension state.
  */
 export function getFingerStates(lm) {
@@ -102,7 +123,7 @@ const PINCH_OPEN_RATIO   = 0.14;
 
 /**
  * Pinch state machine (avoids jitter at the threshold boundary).
- * @param {Array}  lm          - smoothed landmarks
+ * @param {Array}   lm         - smoothed landmarks
  * @param {boolean} wasPinched - previous pinch state
  * @returns {{ pinched: boolean, strength: number, point: {x,y} }}
  */
@@ -166,22 +187,162 @@ export function detectSwipe(history) {
   return null;
 }
 
-// ─── Pose Classification ─────────────────────────────────────────────────────
+// ─── Single-Hand Gesture Classification ──────────────────────────────────────
 
 /**
- * High-level gesture pose from finger states.
- * Returns a string label consumed by the UI.
+ * Classify a single hand's gesture from smoothed landmarks.
+ *
+ * Returns { gesture: string, confidence: number (0-1) }
+ *
+ * Gesture keys (expanded from original 7 to 13):
+ *   PINCH, PEACE, FIST, OPEN_PALM, POINT, THUMBS_UP, THUMBS_DOWN,
+ *   OK, ROCK, CALL_ME, THREE, FOUR, PINKY, CUSTOM
+ *
+ * Confidence is computed as a normalized margin score (how clearly the
+ * detected gesture stands apart from the next-best candidate).
+ *
+ * @param {Array}   lm            - smoothed 21-point landmark array
+ * @param {boolean} [wasPinched]  - previous pinch state for hysteresis
+ * @returns {{ gesture: string, confidence: number, pinchInfo: object }}
+ */
+export function classifySingleHand(lm, wasPinched = false) {
+  const fingerStates = getFingerStates(lm);
+  const pinchInfo    = detectPinch(lm, wasPinched);
+  const { thumb, index, middle, ring, pinky } = fingerStates;
+  const thumbDir = getThumbDirection(lm);
+  const scale    = getHandScale(lm);
+
+  // ── Pinch (highest priority — thumb+index very close) ─────────────────────
+  if (pinchInfo.pinched) {
+    // OK sign: pinch + other 3 fingers extended
+    if (middle && ring && pinky) {
+      return { gesture: 'OK', confidence: 0.85, pinchInfo };
+    }
+    return { gesture: 'PINCH', confidence: pinchInfo.strength, pinchInfo };
+  }
+
+  // ── All 4 fingers curled (fist family) ────────────────────────────────────
+  const allCurled = !index && !middle && !ring && !pinky;
+  if (allCurled) {
+    // Distinguish FIST vs THUMBS_UP vs THUMBS_DOWN by thumb direction + extension
+    const thumbExtended = thumb;
+    const thumbTipVsWristY = thumbDir; // negative = up, positive = down
+
+    if (thumbExtended && thumbTipVsWristY < -0.08) {
+      // Thumb tip clearly above wrist → THUMBS_UP
+      const margin = Math.min(1, Math.abs(thumbTipVsWristY) * 6);
+      return { gesture: 'THUMBS_UP', confidence: 0.75 + margin * 0.2, pinchInfo };
+    }
+    if (thumbExtended && thumbTipVsWristY > 0.08) {
+      // Thumb tip clearly below wrist → THUMBS_DOWN
+      const margin = Math.min(1, thumbTipVsWristY * 6);
+      return { gesture: 'THUMBS_DOWN', confidence: 0.75 + margin * 0.2, pinchInfo };
+    }
+    // FIST (thumb in or ambiguous)
+    const fistConf = allCurled ? 0.88 : 0.7;
+    return { gesture: 'FIST', confidence: fistConf, pinchInfo };
+  }
+
+  // ── All 4 fingers extended ────────────────────────────────────────────────
+  if (index && middle && ring && pinky) {
+    return { gesture: 'OPEN_PALM', confidence: 0.90, pinchInfo };
+  }
+
+  // ── FOUR fingers (no thumb) ────────────────────────────────────────────────
+  if (index && middle && ring && pinky && !thumb) {
+    // Already caught above — but note: FOUR differs from OPEN_PALM only in thumb
+    // The above catches both since thumb doesn't gate the check.
+    // We need a separate check with thumb explicitly curled:
+  }
+  // Explicit FOUR: index+middle+ring+pinky, thumb clearly NOT abducted
+  if (index && middle && ring && pinky && distance2D(lm[4], lm[2]) < distance2D(lm[3], lm[2]) * 1.1) {
+    return { gesture: 'FOUR', confidence: 0.82, pinchInfo };
+  }
+
+  // ── Peace / V-sign ────────────────────────────────────────────────────────
+  if (index && middle && !ring && !pinky) {
+    return { gesture: 'PEACE', confidence: 0.90, pinchInfo };
+  }
+
+  // ── THREE fingers ─────────────────────────────────────────────────────────
+  if (index && middle && ring && !pinky) {
+    return { gesture: 'THREE', confidence: 0.85, pinchInfo };
+  }
+
+  // ── POINT (index only) ────────────────────────────────────────────────────
+  if (index && !middle && !ring && !pinky) {
+    return { gesture: 'POINT', confidence: 0.88, pinchInfo };
+  }
+
+  // ── PINKY only ────────────────────────────────────────────────────────────
+  if (!index && !middle && !ring && pinky) {
+    return { gesture: 'PINKY', confidence: 0.85, pinchInfo };
+  }
+
+  // ── ROCK (index + pinky, middle + ring curled) ────────────────────────────
+  if (index && !middle && !ring && pinky) {
+    return { gesture: 'ROCK', confidence: 0.87, pinchInfo };
+  }
+
+  // ── CALL ME / SHAKA (thumb + pinky extended) ─────────────────────────────
+  if (!index && !middle && !ring && pinky && thumb) {
+    return { gesture: 'CALL_ME', confidence: 0.84, pinchInfo };
+  }
+
+  // ── Fallback ──────────────────────────────────────────────────────────────
+  return { gesture: 'CUSTOM', confidence: 0.50, pinchInfo };
+}
+
+/**
+ * Legacy wrapper for backward compatibility with existing App.jsx code.
+ * Returns just the gesture string (no confidence).
  */
 export function classifyPose(fingerStates, pinchInfo) {
   const { thumb, index, middle, ring, pinky } = fingerStates;
-
   if (pinchInfo.pinched) return 'PINCH';
   if (index && middle && !ring && !pinky) return 'PEACE';
   if (!index && !middle && !ring && !pinky) return 'FIST';
-  if (index && middle && ring && pinky) return 'OPEN_HAND';
+  if (index && middle && ring && pinky) return 'OPEN_PALM';
   if (index && !middle && !ring && !pinky) return 'POINT';
   if (!index && !middle && !ring && pinky) return 'PINKY';
   return 'CUSTOM';
+}
+
+// ─── Two-Hand Combo Classification ───────────────────────────────────────────
+
+/**
+ * Classify a combined gesture from two hands.
+ *
+ * @param {string|null} leftGesture  - gesture key from left hand (or null)
+ * @param {string|null} rightGesture - gesture key from right hand (or null)
+ * @param {number}      leftConf     - confidence for left gesture
+ * @param {number}      rightConf    - confidence for right gesture
+ * @returns {{ combo: string|null, confidence: number }}
+ */
+export function classifyTwoHands(leftGesture, rightGesture, leftConf = 0, rightConf = 0) {
+  if (!leftGesture || !rightGesture) return { combo: null, confidence: 0 };
+
+  const minConf = Math.min(leftConf, rightConf);
+
+  // Normalize: treat OPEN_HAND as OPEN_PALM for combos
+  const L = leftGesture  === 'OPEN_HAND' ? 'OPEN_PALM' : leftGesture;
+  const R = rightGesture === 'OPEN_HAND' ? 'OPEN_PALM' : rightGesture;
+
+  // Symmetric combos (order-independent pairs)
+  const pair = [L, R].sort().join('+');
+
+  const COMBO_MAP = {
+    'THUMBS_UP+THUMBS_UP':   'DOUBLE_THUMBS_UP',
+    'PEACE+PEACE':            'DOUBLE_PEACE',
+    'FIST+FIST':              'DOUBLE_FIST',
+    'OPEN_PALM+OPEN_PALM':    'DOUBLE_OPEN_PALM',
+    'FIST+OPEN_PALM':         'FIST_PALM',
+    'PEACE+THUMBS_UP':        'PEACE_THUMBS',
+    'THUMBS_DOWN+THUMBS_DOWN':'DOUBLE_THUMBS_DOWN',
+  };
+
+  const combo = COMBO_MAP[pair] || null;
+  return { combo, confidence: combo ? minConf : 0 };
 }
 
 // ─── Volume mapping ───────────────────────────────────────────────────────────
@@ -200,7 +361,21 @@ export function getVolumeFromIndex(lm) {
 }
 
 // ─── OS command timing constants (exported for App.jsx) ───────────────────────
-export const FIST_HOLD_MS    = 1500;  // hold FIST this long to launch Chrome
-export const PEACE_HOLD_MS   = 1200;  // hold PEACE this long to launch Spotify
-export const CMD_COOLDOWN_MS = 5000;  // min ms between same command re-firing
-export const VOL_THROTTLE_MS =   80;  // max volume WS send frequency (ms)
+
+/** Hold FIST this long to trigger Chrome */
+export const FIST_HOLD_MS    = 1500;
+/** Hold PEACE this long to trigger Spotify */
+export const PEACE_HOLD_MS   = 1200;
+/** Min ms between same command re-firing */
+export const CMD_COOLDOWN_MS = 8000;
+/** Max volume WS send frequency (ms) */
+export const VOL_THROTTLE_MS =   80;
+
+// ─── New hold-system constants ────────────────────────────────────────────────
+
+/** Minimum confidence for an action gesture to be considered */
+export const GESTURE_CONFIDENCE_THRESHOLD = 0.72;
+/** Duration to hold a gesture before an action fires (ms) */
+export const GESTURE_HOLD_DURATION = 1500;
+/** Cooldown between same action firing again (ms) */
+export const ACTION_COOLDOWN_MS = 8000;

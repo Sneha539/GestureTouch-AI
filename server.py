@@ -8,6 +8,8 @@ Commands accepted (JSON):
   {"action": "set_volume", "level": 0-100}
   {"action": "open_spotify"}
   {"action": "open_chrome"}
+  {"action": "open_excel"}
+  {"action": "open_powerpoint"}
 
 Usage:
   pip install -r requirements.txt
@@ -134,6 +136,70 @@ def open_chrome() -> str:
 
     return "Chrome not found — add chrome.exe to PATH"
 
+def open_excel() -> str:
+    """Open Microsoft Excel. Tries URI scheme, then known install paths."""
+    # Method 1: MS Office URI scheme (works with Office 365 / Office 2016+)
+    try:
+        os.startfile("ms-excel:")
+        return "Excel launched (ms-excel URI)"
+    except Exception:
+        pass
+
+    # Method 2: Known install paths (Office 365, 2019, 2016)
+    excel_paths = [
+        os.path.expandvars(r"%ProgramFiles%\Microsoft Office\root\Office16\EXCEL.EXE"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft Office\root\Office16\EXCEL.EXE"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft Office\Office16\EXCEL.EXE"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft Office\Office15\EXCEL.EXE"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft Office\Office16\EXCEL.EXE"),
+    ]
+    for path in excel_paths:
+        if os.path.exists(path):
+            subprocess.Popen([path], creationflags=subprocess.CREATE_NO_WINDOW)
+            return f"Excel launched ({path})"
+
+    # Method 3: Shell start
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", "start", "excel"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return "Excel launched (shell)"
+    except Exception as e:
+        return f"Excel not found — browser will open excel.new ({e})"
+
+def open_powerpoint() -> str:
+    """Open Microsoft PowerPoint. Tries URI scheme, then known install paths."""
+    # Method 1: MS Office URI scheme
+    try:
+        os.startfile("ms-powerpoint:")
+        return "PowerPoint launched (ms-powerpoint URI)"
+    except Exception:
+        pass
+
+    # Method 2: Known install paths
+    ppt_paths = [
+        os.path.expandvars(r"%ProgramFiles%\Microsoft Office\root\Office16\POWERPNT.EXE"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft Office\root\Office16\POWERPNT.EXE"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft Office\Office16\POWERPNT.EXE"),
+        os.path.expandvars(r"%ProgramFiles%\Microsoft Office\Office15\POWERPNT.EXE"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Microsoft Office\Office16\POWERPNT.EXE"),
+    ]
+    for path in ppt_paths:
+        if os.path.exists(path):
+            subprocess.Popen([path], creationflags=subprocess.CREATE_NO_WINDOW)
+            return f"PowerPoint launched ({path})"
+
+    # Method 3: Shell start
+    try:
+        subprocess.Popen(
+            ["cmd", "/c", "start", "powerpnt"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        return "PowerPoint launched (shell)"
+    except Exception as e:
+        return f"PowerPoint not found — browser will open powerpoint.new ({e})"
+
 # ── Throttle: prevent volume spam flooding the OS ─────────────────────────────
 _last_volume_call  = 0.0
 VOLUME_THROTTLE_S  = 0.05   # max one volume change per 50ms at server side
@@ -165,6 +231,12 @@ async def handler(websocket):
 
                 elif action == "open_chrome":
                     result = open_chrome()
+
+                elif action == "open_excel":
+                    result = open_excel()
+
+                elif action == "open_powerpoint":
+                    result = open_powerpoint()
 
                 print(f"  [{action}] {result}")
                 await websocket.send(json.dumps({"status": "ok", "action": action, "result": result}))

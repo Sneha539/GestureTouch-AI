@@ -6,12 +6,17 @@ import {
   detectPinch,
   detectSwipe,
   classifyPose,
+  classifySingleHand,
+  classifyTwoHands,
   getFingerStates,
   getVolumeFromIndex,
   FIST_HOLD_MS,
   PEACE_HOLD_MS,
   CMD_COOLDOWN_MS,
   VOL_THROTTLE_MS,
+  GESTURE_CONFIDENCE_THRESHOLD,
+  GESTURE_HOLD_DURATION,
+  ACTION_COOLDOWN_MS,
 } from './gestureEngine';
 import { useSystemBridge } from './useSystemBridge';
 
@@ -23,25 +28,85 @@ const EMA_ALPHA           = 0.55;
 const GRAB_CONFIRM_FRAMES = 5;
 const GRAB_PICK_RADIUS_PX = 130;
 
-// ─── Gesture metadata ─────────────────────────────────────────────────────────
+// ─── Gesture metadata — covers all 13 single-hand + NONE + combos ─────────────
 const GESTURE_META = {
-  PINCH:     { emoji: '🤌', label: 'Pinch',      sub: 'Thumb + Index' },
-  PEACE:     { emoji: '✌️', label: 'Peace',      sub: 'Hold 1.2s → Spotify' },
-  FIST:      { emoji: '✊', label: 'Fist',        sub: 'Hold 1.5s → Chrome' },
-  OPEN_HAND: { emoji: '🖐️', label: 'Open Hand',  sub: 'Release to drop' },
-  POINT:     { emoji: '☝️', label: 'Volume',     sub: 'Move up/down to adjust' },
-  PINKY:     { emoji: '🤙', label: 'Pinky',      sub: 'Pinky extended' },
-  CUSTOM:    { emoji: '🖐️', label: 'Custom',     sub: 'Mixed pose' },
-  NONE:      { emoji: '—',  label: 'No Hand',    sub: 'Move hand into view' },
+  PINCH:            { emoji: '🤌', label: 'Pinch',        sub: 'Thumb + Index close' },
+  PEACE:            { emoji: '✌️', label: 'Peace',        sub: 'Hold 1.2s → Spotify' },
+  FIST:             { emoji: '✊', label: 'Fist',          sub: 'Hold 1.5s → Chrome' },
+  OPEN_PALM:        { emoji: '🖐️', label: 'Open Palm',    sub: 'All fingers extended' },
+  OPEN_HAND:        { emoji: '🖐️', label: 'Open Palm',    sub: 'All fingers extended' },
+  POINT:            { emoji: '☝️', label: 'Point',        sub: 'Move up/down → Volume' },
+  THUMBS_UP:        { emoji: '👍', label: 'Thumbs Up',    sub: 'Confirm / select' },
+  THUMBS_DOWN:      { emoji: '👎', label: 'Thumbs Down',  sub: 'Cancel / back' },
+  OK:               { emoji: '👌', label: 'OK Sign',      sub: 'Pinch + 3 extended' },
+  ROCK:             { emoji: '🤘', label: 'Rock',         sub: 'Index + Pinky' },
+  CALL_ME:          { emoji: '🤙', label: 'Call Me',      sub: 'Thumb + Pinky' },
+  THREE:            { emoji: '🤟', label: 'Three',        sub: 'Index + Middle + Ring' },
+  FOUR:             { emoji: '🖖', label: 'Four',         sub: '4 fingers extended' },
+  PINKY:            { emoji: '🤙', label: 'Pinky',        sub: 'Pinky extended' },
+  CUSTOM:           { emoji: '✦',  label: 'Custom',       sub: 'Mixed pose' },
+  NONE:             { emoji: '—',  label: 'No Hand',      sub: 'Move hand into view' },
+  DOUBLE_THUMBS_UP: { emoji: '👍👍', label: 'Double Thumbs Up', sub: 'Hold 1.5s → Excel' },
+  DOUBLE_PEACE:     { emoji: '✌✌',  label: 'Double Peace',     sub: 'Hold 1.5s → PowerPoint' },
+  DOUBLE_FIST:      { emoji: '✊✊',  label: 'Double Fist',      sub: 'Both fists' },
+  DOUBLE_OPEN_PALM: { emoji: '🖐🖐', label: 'Both Palms',       sub: 'Both palms open' },
+  FIST_PALM:        { emoji: '✊🖐', label: 'Fist + Palm',      sub: 'Mixed combo' },
+  PEACE_THUMBS:     { emoji: '✌👍', label: 'Peace + Thumbs',   sub: 'Mixed combo' },
 };
 
 const SWIPE_ICONS = { LEFT: '←', RIGHT: '→', UP: '↑', DOWN: '↓' };
 
 const ACTION_META = {
-  open_spotify: { emoji: '🎵', label: 'Spotify opened' },
-  open_chrome:  { emoji: '🌐', label: 'Chrome opened' },
-  set_volume:   { emoji: '🔊', label: 'Volume set' },
+  open_spotify:    { emoji: '🎵', label: 'Spotify opened' },
+  open_chrome:     { emoji: '🌐', label: 'Chrome opened' },
+  open_excel:      { emoji: '📊', label: 'Excel opened' },
+  open_powerpoint: { emoji: '📊', label: 'PowerPoint opened' },
+  set_volume:      { emoji: '🔊', label: 'Volume set' },
 };
+
+// ─── Centralized Gesture → Action Map ─────────────────────────────────────────
+// Keys match gesture strings returned by classifySingleHand / classifyTwoHands.
+// Each entry has: label, emoji, hint, holdMs, fire(sendCommand, wsOpen)
+const buildGestureActions = (sendCommand) => ({
+  // Two-hand combos (highest priority)
+  DOUBLE_THUMBS_UP: {
+    label:  'Open Excel',
+    emoji:  '📊',
+    hint:   'Both Thumbs Up · Hold 1.5s',
+    holdMs: GESTURE_HOLD_DURATION,
+    fire:   (wsOpen) => {
+      window.open('https://excel.new', '_blank', 'noopener');
+      if (wsOpen) sendCommand('open_excel');
+      return 'open_excel';
+    },
+  },
+  DOUBLE_PEACE: {
+    label:  'Open PowerPoint',
+    emoji:  '📊',
+    hint:   'Both Peace · Hold 1.5s',
+    holdMs: GESTURE_HOLD_DURATION,
+    fire:   (wsOpen) => {
+      window.open('https://powerpoint.new', '_blank', 'noopener');
+      if (wsOpen) sendCommand('open_powerpoint');
+      return 'open_powerpoint';
+    },
+  },
+  // Single-hand actions
+  PEACE: {
+    label:  'Open Spotify',
+    emoji:  '🎵',
+    hint:   'Peace · Hold 1.2s',
+    holdMs: PEACE_HOLD_MS,
+    fire:   (wsOpen) => { if (wsOpen) sendCommand('open_spotify'); return 'open_spotify'; },
+  },
+  FIST: {
+    label:  'Open Chrome',
+    emoji:  '🌐',
+    hint:   'Fist · Hold 1.5s',
+    holdMs: FIST_HOLD_MS,
+    fire:   (wsOpen) => { if (wsOpen) sendCommand('open_chrome'); return 'open_chrome'; },
+  },
+});
 
 // ─── Kanban tiles ─────────────────────────────────────────────────────────────
 const INIT_TILES = [
@@ -69,16 +134,32 @@ const CONNECTIONS = [
   [5,9],[9,13],[13,17],
 ];
 
-function drawLandmarks(ctx, lm, isGrabbing, isPointing, volume) {
+/**
+ * Draw landmarks for a single hand on ctx.
+ * Does NOT clearRect — caller handles clearing once per frame.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Array} lm         - 21-point landmark array
+ * @param {boolean} isGrabbing
+ * @param {boolean} isPointing
+ * @param {number|null} volume
+ * @param {'left'|'right'} side - controls color tint
+ */
+function drawHandLandmarks(ctx, lm, isGrabbing, isPointing, volume, side = 'right') {
   if (!ctx || !lm) return;
-  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
   const px = (l) => (1 - l.x) * ctx.canvas.width;
   const py = (l) => l.y * ctx.canvas.height;
 
-  const lineColor = isGrabbing  ? 'rgba(255,122,69,0.85)'
-                  : isPointing  ? 'rgba(76,141,255,0.9)'
-                  : 'rgba(76,141,255,0.55)';
+  // Right hand: classic blue. Left hand: teal-shifted blue.
+  const baseColor = side === 'left'
+    ? { r: 76, g: 200, b: 220 }
+    : { r: 76, g: 141, b: 255 };
+
+  const lineColor = isGrabbing
+    ? 'rgba(255,122,69,0.85)'
+    : isPointing
+    ? `rgba(${baseColor.r},${baseColor.g},${baseColor.b},0.9)`
+    : `rgba(${baseColor.r},${baseColor.g},${baseColor.b},0.55)`;
 
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = lineColor;
@@ -96,19 +177,21 @@ function drawLandmarks(ctx, lm, isGrabbing, isPointing, volume) {
     ctx.arc(px(l), py(l), isTip ? 5 : 3, 0, Math.PI * 2);
     ctx.fillStyle = isIndexTip && isPointing ? '#FF7A45'
                   : isTip && isGrabbing      ? '#FF7A45'
-                  : isTip                    ? '#4C8DFF'
-                  : 'rgba(76,141,255,0.4)';
+                  : isTip                    ? `rgba(${baseColor.r},${baseColor.g},${baseColor.b},1)`
+                  : `rgba(${baseColor.r},${baseColor.g},${baseColor.b},0.4)`;
     ctx.fill();
     if (isTip) {
       ctx.shadowBlur = 8;
-      ctx.shadowColor = isGrabbing ? 'rgba(255,122,69,0.6)' : 'rgba(76,141,255,0.6)';
+      ctx.shadowColor = isGrabbing
+        ? 'rgba(255,122,69,0.6)'
+        : `rgba(${baseColor.r},${baseColor.g},${baseColor.b},0.6)`;
       ctx.fill();
       ctx.shadowBlur = 0;
     }
   });
 
-  // Volume guide line when pointing
-  if (isPointing && volume !== null) {
+  // Volume guide line when pointing (right hand only)
+  if (isPointing && volume !== null && side === 'right') {
     const tipX = px(lm[8]);
     const tipY = py(lm[8]);
     ctx.save();
@@ -120,46 +203,63 @@ function drawLandmarks(ctx, lm, isGrabbing, isPointing, volume) {
     ctx.lineTo(tipX, ctx.canvas.height * 0.85);
     ctx.stroke();
     ctx.restore();
-
-    // Volume label
     ctx.font = 'bold 12px JetBrains Mono, monospace';
     ctx.fillStyle = '#FF7A45';
     ctx.fillText(`${volume}%`, tipX + 10, tipY - 8);
   }
 }
 
-// ─── Hero: MediaPipe-accurate 21-point hand skeleton coordinates ───────────────
-// Normalized [0,1] space, shaped as an open right hand, palm facing camera.
-// Points ordered 0-20 matching MediaPipe Hand landmark indices.
+/**
+ * Main canvas drawing function — clears and draws all detected hands.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {Array} handsData - [{ lm, isGrabbing, isPointing, volume, side }]
+ */
+function drawAllHands(ctx, handsData) {
+  if (!ctx) return;
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  for (const h of handsData) {
+    drawHandLandmarks(ctx, h.lm, h.isGrabbing, h.isPointing, h.volume, h.side);
+  }
+}
+
+// Backward-compatible single-hand wrapper
+function drawLandmarks(ctx, lm, isGrabbing, isPointing, volume) {
+  if (!ctx || !lm) return;
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  drawHandLandmarks(ctx, lm, isGrabbing, isPointing, volume, 'right');
+}
+
+// ─── Hero: Two-hand constellation ─────────────────────────────────────────────
+// Primary hand points (open right hand, palm facing camera)
 const HAND_POINTS = [
-  // 0 - WRIST
-  { x: 0.50, y: 0.88 },
-  // 1-4 - THUMB
-  { x: 0.36, y: 0.75 },
-  { x: 0.26, y: 0.64 },
-  { x: 0.18, y: 0.55 },
-  { x: 0.11, y: 0.45 },
-  // 5-8 - INDEX
-  { x: 0.42, y: 0.60 },
-  { x: 0.40, y: 0.44 },
-  { x: 0.40, y: 0.31 },
-  { x: 0.40, y: 0.18 },
-  // 9-12 - MIDDLE
-  { x: 0.52, y: 0.57 },
-  { x: 0.52, y: 0.40 },
-  { x: 0.52, y: 0.26 },
-  { x: 0.52, y: 0.13 },
-  // 13-16 - RING
-  { x: 0.62, y: 0.59 },
-  { x: 0.63, y: 0.43 },
-  { x: 0.63, y: 0.29 },
-  { x: 0.63, y: 0.17 },
-  // 17-20 - PINKY
-  { x: 0.71, y: 0.63 },
-  { x: 0.73, y: 0.50 },
-  { x: 0.74, y: 0.38 },
-  { x: 0.75, y: 0.27 },
+  { x: 0.50, y: 0.88 },  // 0 WRIST
+  { x: 0.36, y: 0.75 },  // 1 THUMB_CMC
+  { x: 0.26, y: 0.64 },  // 2
+  { x: 0.18, y: 0.55 },  // 3
+  { x: 0.11, y: 0.45 },  // 4 THUMB_TIP
+  { x: 0.42, y: 0.60 },  // 5 INDEX_MCP
+  { x: 0.40, y: 0.44 },  // 6
+  { x: 0.40, y: 0.31 },  // 7
+  { x: 0.40, y: 0.18 },  // 8 INDEX_TIP
+  { x: 0.52, y: 0.57 },  // 9 MIDDLE_MCP
+  { x: 0.52, y: 0.40 },  // 10
+  { x: 0.52, y: 0.26 },  // 11
+  { x: 0.52, y: 0.13 },  // 12 MIDDLE_TIP
+  { x: 0.62, y: 0.59 },  // 13 RING_MCP
+  { x: 0.63, y: 0.43 },  // 14
+  { x: 0.63, y: 0.29 },  // 15
+  { x: 0.63, y: 0.17 },  // 16 RING_TIP
+  { x: 0.71, y: 0.63 },  // 17 PINKY_MCP
+  { x: 0.73, y: 0.50 },  // 18
+  { x: 0.74, y: 0.38 },  // 19
+  { x: 0.75, y: 0.27 },  // 20 PINKY_TIP
 ];
+
+// Second hand: mirrored + horizontally offset for two-hand visual
+const HAND_POINTS_LEFT = HAND_POINTS.map(pt => ({
+  x: (1 - pt.x) * 0.75 + 0.60,  // mirror and push right
+  y: pt.y + 0.04,                 // slight vertical offset
+}));
 
 const TIP_INDICES = new Set([4, 8, 12, 16, 20]);
 
@@ -171,7 +271,6 @@ function HandConstellation({ parallaxRef }) {
     const svg = svgRef.current;
     if (!svg) return;
 
-    // Parallax via mouse
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (prefersReduced) return;
 
@@ -187,7 +286,7 @@ function HandConstellation({ parallaxRef }) {
     return () => window.removeEventListener('mousemove', handleMouse);
   }, []);
 
-  const W = 360;
+  const W = 420;
   const H = 400;
   const toSVG = (pt) => ({ x: pt.x * W, y: pt.y * H });
 
@@ -205,7 +304,34 @@ function HandConstellation({ parallaxRef }) {
         aria-hidden="true"
         style={{ transition: 'transform 0.12s ease-out', willChange: 'transform' }}
       >
-        {/* Connection lines */}
+        {/* ── Second hand (left, ghost) ── */}
+        {CONNECTIONS.map(([a, b], idx) => {
+          const pa = toSVG(HAND_POINTS_LEFT[a]);
+          const pb = toSVG(HAND_POINTS_LEFT[b]);
+          return (
+            <line
+              key={`l2-${idx}`}
+              className="c-line c-line-secondary"
+              x1={pa.x} y1={pa.y}
+              x2={pb.x} y2={pb.y}
+            />
+          );
+        })}
+        {HAND_POINTS_LEFT.map((pt, i) => {
+          const { x, y } = toSVG(pt);
+          const isTip = TIP_INDICES.has(i);
+          return (
+            <circle
+              key={`ld-${i}`}
+              className={`c-dot c-dot-secondary${isTip ? ' tip' : ''}`}
+              cx={x}
+              cy={y}
+              r={isTip ? 3.5 : 2}
+            />
+          );
+        })}
+
+        {/* ── Primary hand (right) ── */}
         {CONNECTIONS.map(([a, b], idx) => {
           const pa = toSVG(HAND_POINTS[a]);
           const pb = toSVG(HAND_POINTS[b]);
@@ -219,8 +345,6 @@ function HandConstellation({ parallaxRef }) {
             />
           );
         })}
-
-        {/* Landmark dots */}
         {HAND_POINTS.map((pt, i) => {
           const { x, y } = toSVG(pt);
           const isTip = TIP_INDICES.has(i);
@@ -245,15 +369,12 @@ function HeroScreen({ fps, camActive, onLaunch }) {
   const [gesturesOpen, setGesturesOpen] = useState(false);
   const parallaxRef = useRef(null);
 
+  const landmarkCount = camActive && fps > 0 ? 'up to 42' : '42';
   const statusText = camActive && fps > 0
-    ? `tracking 21 landmarks · ${fps} fps · READY`
+    ? `dual-hand tracking · ${landmarkCount} landmarks · ${fps} fps · READY`
     : camActive
     ? `model loading · camera active · standby`
     : `camera idle · awaiting launch`;
-
-  const handleLaunch = () => {
-    onLaunch();
-  };
 
   return (
     <div className="hero">
@@ -286,7 +407,7 @@ function HeroScreen({ fps, camActive, onLaunch }) {
           </a>
           <button
             className="hero-nav-cta"
-            onClick={handleLaunch}
+            onClick={onLaunch}
             id="nav-launch-btn"
             aria-label="Launch the gesture tracking application"
           >
@@ -302,7 +423,7 @@ function HeroScreen({ fps, camActive, onLaunch }) {
         <div className="hero-content">
 
           <div className="hero-micro-label" aria-label="System identifier">
-            [ HAND TRACKING / REAL-TIME CV ]
+            [ DUAL-HAND TRACKING / REAL-TIME CV ]
           </div>
 
           <h1 className="hero-headline">
@@ -311,7 +432,7 @@ function HeroScreen({ fps, camActive, onLaunch }) {
           </h1>
 
           <p className="hero-description">
-            Real-time hand tracking that turns natural gestures into touch-free controls. 21 landmarks. Zero hardware.
+            Real-time two-hand tracking that turns natural gestures into touch-free controls. Up to 42 landmarks. Zero hardware.
           </p>
 
           {/* Terminal status */}
@@ -333,7 +454,7 @@ function HeroScreen({ fps, camActive, onLaunch }) {
           <div className="hero-cta-row">
             <button
               className="btn btn-primary"
-              onClick={handleLaunch}
+              onClick={onLaunch}
               id="hero-launch-btn"
               aria-label="Launch the gesture tracking application"
             >
@@ -362,10 +483,17 @@ function HeroScreen({ fps, camActive, onLaunch }) {
                 ['🤌', 'Pinch'],
                 ['✌️', 'Peace'],
                 ['✊', 'Fist'],
-                ['🖐️', 'Open Hand'],
+                ['🖐️', 'Open Palm'],
                 ['☝️', 'Point'],
-                ['🤙', 'Pinky'],
-                ['✦',  'Custom'],
+                ['👍', 'Thumbs Up'],
+                ['👎', 'Thumbs Down'],
+                ['👌', 'OK'],
+                ['🤘', 'Rock'],
+                ['🤙', 'Call Me'],
+                ['🤟', 'Three'],
+                ['🖖', 'Four'],
+                ['👍👍', 'Double Thumbs'],
+                ['✌✌', 'Double Peace'],
               ].map(([emoji, name]) => (
                 <div key={name} className="hero-gesture-chip" id={`gesture-chip-${name.toLowerCase().replace(/ /g, '-')}`}>
                   <span aria-hidden="true">{emoji}</span>
@@ -378,16 +506,16 @@ function HeroScreen({ fps, camActive, onLaunch }) {
           {/* Stats */}
           <div className="hero-stats" id="hero-stats" role="list" aria-label="Technical specifications">
             <div className="hero-stat" role="listitem">
-              <span className="hero-stat-value">21</span>
-              <span className="hero-stat-label">Hand Landmarks</span>
+              <span className="hero-stat-value">42</span>
+              <span className="hero-stat-label">Max Landmarks</span>
             </div>
             <div className="hero-stat" role="listitem">
-              <span className="hero-stat-value">7</span>
+              <span className="hero-stat-value">13+</span>
               <span className="hero-stat-label">Gestures</span>
             </div>
             <div className="hero-stat" role="listitem">
-              <span className="hero-stat-value">Real-Time</span>
-              <span className="hero-stat-label">Detection</span>
+              <span className="hero-stat-value">2</span>
+              <span className="hero-stat-label">Hands</span>
             </div>
             <div className="hero-stat" role="listitem">
               <span className="hero-stat-value" style={{ fontSize: '1rem', paddingTop: '0.2rem' }}>MediaPipe</span>
@@ -413,6 +541,30 @@ function HeroScreen({ fps, camActive, onLaunch }) {
   );
 }
 
+// ─── Hand Section sub-component ───────────────────────────────────────────────
+function HandSection({ side, detected, gesture, confidence }) {
+  const meta = GESTURE_META[gesture] || GESTURE_META.NONE;
+  return (
+    <div className={`hand-section ${detected ? 'detected' : ''}`} id={`hand-section-${side}`}>
+      <div className="hand-section-label">
+        <span className={`status-dot ${detected ? 'active' : ''}`} aria-hidden="true" />
+        {side.toUpperCase()} HAND
+      </div>
+      <div className="hand-section-gesture" aria-live="polite">
+        {detected ? meta.label.toUpperCase() : '—'}
+      </div>
+      {detected && (
+        <div className="hand-section-conf">
+          CONF {Math.round(confidence * 100)}%
+          <div className="hand-conf-bar">
+            <div className="hand-conf-fill" style={{ width: `${Math.round(confidence * 100)}%` }} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const videoRef      = useRef(null);
@@ -422,45 +574,76 @@ export default function App() {
   const rafRef        = useRef(null);
   const processingRef = useRef(false);
 
-  // Gesture state refs
-  const smoothedLmRef   = useRef(null);
-  const wasPinchedRef   = useRef(false);
+  // ── Per-hand smoothed landmark refs ──────────────────────────────────────
+  const smoothedLeftRef  = useRef(null);
+  const smoothedRightRef = useRef(null);
+  const wasPinchedLeftRef  = useRef(false);
+  const wasPinchedRightRef = useRef(false);
+
+  // ── Legacy single-hand refs (for existing drag/swipe/volume) ─────────────
   const palmHistoryRef  = useRef([]);
   const lastSwipeRef    = useRef(0);
   const fpsRef          = useRef({ frames: 0, last: performance.now() });
   const grabFramesRef   = useRef(0);
   const dragRef         = useRef({ active: false, tileId: null });
 
-  // OS command refs (mutable — avoid re-render on every frame)
-  const fistHoldStartRef    = useRef(null);
-  const peaceHoldStartRef   = useRef(null);
-  const lastCmdTimeRef      = useRef({});   // { action: timestamp }
-  const lastVolSentRef      = useRef(0);
+  // ── Hold system refs (centralized) ────────────────────────────────────────
+  const holdRef = useRef({
+    gesture:    null,    // gesture key being held
+    startTime:  null,    // timestamp when hold started
+    locked:     false,   // true after action fires, prevents re-fire
+    lastFired:  {},      // { gestureKey: timestamp } — per-gesture cooldown
+  });
 
-  // React state
-  const [screen,     setScreen]     = useState('hero');  // 'hero' | 'transitioning' | 'app'
-  const [camActive,  setCamActive]  = useState(false);
-  const [camError,   setCamError]   = useState(null);
-  const [gesture,    setGesture]    = useState('NONE');
-  const [prevGesture, setPrevGesture] = useState('NONE');
-  const [pinchStr,   setPinchStr]   = useState(0);
-  const [isPinched,  setIsPinched]  = useState(false);
-  const [fps,        setFps]        = useState(0);
-  const [handCount,  setHandCount]  = useState(0);
-  const [swipeLog,   setSwipeLog]   = useState([]);
-  const [tiles,      setTiles]      = useState(INIT_TILES);
-  const [dragState,  setDragState]  = useState({ active: false, tileId: null, x: 0, y: 0 });
-  const [hoverCol,   setHoverCol]   = useState(null);
-  const [volume,     setVolume]     = useState(null);       // 0-100 or null
-  const [fistProg,   setFistProg]   = useState(0);          // 0-100 hold progress
-  const [peaceProg,  setPeaceProg]  = useState(0);          // 0-100 hold progress
-  const [sentAction, setSentAction] = useState(null);       // last OS action dispatched
-  const [gestureFlash, setGestureFlash] = useState(false);  // brief emphasis on gesture change
+  // ── Legacy hold refs (kept for backward compat display logic) ─────────────
+  const fistHoldStartRef  = useRef(null);
+  const peaceHoldStartRef = useRef(null);
+  const lastCmdTimeRef    = useRef({});
+  const lastVolSentRef    = useRef(0);
+
+  // ── React state ───────────────────────────────────────────────────────────
+  const [screen,       setScreen]       = useState('hero');
+  const [camActive,    setCamActive]    = useState(false);
+  const [camError,     setCamError]     = useState(null);
+
+  // Primary (single-hand) gesture state — used for Kanban & volume (backward compat)
+  const [gesture,      setGesture]      = useState('NONE');
+  const [prevGesture,  setPrevGesture]  = useState('NONE');
+  const [pinchStr,     setPinchStr]     = useState(0);
+  const [isPinched,    setIsPinched]    = useState(false);
+
+  // Two-hand state
+  const [leftHand,     setLeftHand]     = useState({ detected: false, gesture: 'NONE', confidence: 0 });
+  const [rightHand,    setRightHand]    = useState({ detected: false, gesture: 'NONE', confidence: 0 });
+  const [comboGesture, setComboGesture] = useState(null);   // combined gesture string or null
+
+  // Hold progress
+  const [holdState,    setHoldState]    = useState({ gesture: null, progress: 0, locked: false, actionLabel: '' });
+
+  // Misc
+  const [fps,          setFps]          = useState(0);
+  const [handCount,    setHandCount]    = useState(0);
+  const [swipeLog,     setSwipeLog]     = useState([]);
+  const [tiles,        setTiles]        = useState(INIT_TILES);
+  const [dragState,    setDragState]    = useState({ active: false, tileId: null, x: 0, y: 0 });
+  const [hoverCol,     setHoverCol]     = useState(null);
+  const [volume,       setVolume]       = useState(null);
+  const [fistProg,     setFistProg]     = useState(0);
+  const [peaceProg,    setPeaceProg]    = useState(0);
+  const [sentAction,   setSentAction]   = useState(null);
+  const [gestureFlash, setGestureFlash] = useState(false);
 
   // System bridge
   const { wsStatus, lastAction, sendCommand } = useSystemBridge();
+  const isBridgeUp = wsStatus === 'connected';
 
-  // ── FPS ───────────────────────────────────────────────────────────
+  // Gesture actions (memoized so sendCommand reference is stable)
+  const gestureActionsRef = useRef(null);
+  useEffect(() => {
+    gestureActionsRef.current = buildGestureActions(sendCommand);
+  }, [sendCommand]);
+
+  // ── FPS ───────────────────────────────────────────────────────────────────
   const tickFps = useCallback(() => {
     const f = fpsRef.current;
     f.frames++;
@@ -472,7 +655,7 @@ export default function App() {
     }
   }, []);
 
-  // ── Per-frame handler ─────────────────────────────────────────────
+  // ── Per-frame handler ─────────────────────────────────────────────────────
   const onResults = useCallback((results) => {
     tickFps();
 
@@ -484,62 +667,167 @@ export default function App() {
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext('2d');
 
-    const multiHands = results.multiHandLandmarks;
-    const count      = multiHands?.length ?? 0;
+    const multiHands     = results.multiHandLandmarks  || [];
+    const multiHandedness = results.multiHandedness    || [];
+    const count = multiHands.length;
     setHandCount(count);
 
+    // ── Reset when no hands ──────────────────────────────────────────────
     if (!count) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      smoothedLmRef.current = null;
-      wasPinchedRef.current = false;
+      smoothedLeftRef.current  = null;
+      smoothedRightRef.current = null;
+      wasPinchedLeftRef.current  = false;
+      wasPinchedRightRef.current = false;
       palmHistoryRef.current = [];
       grabFramesRef.current  = 0;
       fistHoldStartRef.current  = null;
       peaceHoldStartRef.current = null;
+
       if (dragRef.current.active) {
         dragRef.current = { active: false, tileId: null };
         setDragState({ active: false, tileId: null, x: 0, y: 0 });
         setHoverCol(null);
       }
+
       setGesture('NONE');
       setPinchStr(0);
       setIsPinched(false);
       setVolume(null);
       setFistProg(0);
       setPeaceProg(0);
+      setLeftHand({ detected: false, gesture: 'NONE', confidence: 0 });
+      setRightHand({ detected: false, gesture: 'NONE', confidence: 0 });
+      setComboGesture(null);
+
+      // Reset hold system
+      holdRef.current.gesture   = null;
+      holdRef.current.startTime = null;
+      holdRef.current.locked    = false;
+      setHoldState({ gesture: null, progress: 0, locked: false, actionLabel: '' });
       return;
     }
 
-    // Smooth landmarks
-    const lm = smoothLandmarks(smoothedLmRef.current, multiHands[0], EMA_ALPHA);
-    smoothedLmRef.current = lm;
+    // ── Parse hands — assign left/right from MediaPipe handedness ───────
+    // MediaPipe label is from the model's perspective (front camera = mirrored).
+    // We store as-is. UI labels match what MediaPipe reports.
+    let leftLm = null, rightLm = null;
+    let leftConf = 0, rightConf = 0;
 
-    // Detect
-    const fingerStates = getFingerStates(lm);
-    const pinchInfo    = detectPinch(lm, wasPinchedRef.current);
-    wasPinchedRef.current = pinchInfo.pinched;
-    const pose = classifyPose(fingerStates, pinchInfo);
-    const isFist = !fingerStates.index && !fingerStates.middle
-                && !fingerStates.ring  && !fingerStates.pinky;
-    const isPointing = pose === 'POINT';
+    for (let i = 0; i < count; i++) {
+      const rawLabel = multiHandedness[i]?.label ?? 'Right';
+      const score    = multiHandedness[i]?.score  ?? 0.9;
+      const rawLm    = multiHands[i];
 
-    // Current volume for drawing
-    const currentVol = isPointing ? getVolumeFromIndex(lm) : null;
-    drawLandmarks(ctx, lm, dragRef.current.active || isFist, isPointing, currentVol);
+      if (rawLabel === 'Left') {
+        leftLm   = rawLm;
+        leftConf = score;
+      } else {
+        rightLm   = rawLm;
+        rightConf = score;
+      }
+    }
 
-    setPinchStr(pinchInfo.strength);
-    setIsPinched(pinchInfo.pinched);
+    // ── Smooth landmarks independently per hand ───────────────────────────
+    if (leftLm) {
+      smoothedLeftRef.current = smoothLandmarks(smoothedLeftRef.current, leftLm, EMA_ALPHA);
+    } else {
+      smoothedLeftRef.current  = null;
+      wasPinchedLeftRef.current = false;
+    }
+    if (rightLm) {
+      smoothedRightRef.current = smoothLandmarks(smoothedRightRef.current, rightLm, EMA_ALPHA);
+    } else {
+      smoothedRightRef.current  = null;
+      wasPinchedRightRef.current = false;
+    }
+
+    const leftSmoothed  = smoothedLeftRef.current;
+    const rightSmoothed = smoothedRightRef.current;
+
+    // ── Classify each hand ────────────────────────────────────────────────
+    let leftResult  = { gesture: 'NONE', confidence: 0, pinchInfo: { pinched: false, strength: 0 } };
+    let rightResult = { gesture: 'NONE', confidence: 0, pinchInfo: { pinched: false, strength: 0 } };
+
+    if (leftSmoothed) {
+      leftResult = classifySingleHand(leftSmoothed, wasPinchedLeftRef.current);
+      wasPinchedLeftRef.current = leftResult.pinchInfo.pinched;
+    }
+    if (rightSmoothed) {
+      rightResult = classifySingleHand(rightSmoothed, wasPinchedRightRef.current);
+      wasPinchedRightRef.current = rightResult.pinchInfo.pinched;
+    }
+
+    // ── Update per-hand state ─────────────────────────────────────────────
+    setLeftHand({
+      detected:   !!leftSmoothed,
+      gesture:    leftResult.gesture,
+      confidence: leftResult.confidence,
+    });
+    setRightHand({
+      detected:   !!rightSmoothed,
+      gesture:    rightResult.gesture,
+      confidence: rightResult.confidence,
+    });
+
+    // ── Two-hand combo classification ─────────────────────────────────────
+    let combo = null;
+    if (leftSmoothed && rightSmoothed) {
+      const { combo: c, confidence: cc } = classifyTwoHands(
+        leftResult.gesture, rightResult.gesture,
+        leftResult.confidence, rightResult.confidence
+      );
+      combo = c;
+      if (c) setComboGesture(c);
+      else    setComboGesture(null);
+    } else {
+      setComboGesture(null);
+    }
+
+    // ── Primary hand logic (for backward-compat: drag, volume, swipe) ────
+    // Use right hand if present, otherwise left. Mirrors previous single-hand behavior.
+    const primaryLm     = rightSmoothed || leftSmoothed;
+    const primaryResult = rightSmoothed ? rightResult : leftResult;
+    const primarySide   = rightSmoothed ? 'right' : 'left';
+
+    const isFist     = primaryResult.gesture === 'FIST';
+    const isPointing = primaryResult.gesture === 'POINT';
+    const currentVol = isPointing ? getVolumeFromIndex(primaryLm) : null;
+
+    // ── Draw all hands ────────────────────────────────────────────────────
+    const handsDrawData = [];
+    if (leftSmoothed) {
+      handsDrawData.push({
+        lm: leftSmoothed, isGrabbing: false,
+        isPointing: leftResult.gesture === 'POINT',
+        volume: null, side: 'left',
+      });
+    }
+    if (rightSmoothed) {
+      handsDrawData.push({
+        lm: rightSmoothed,
+        isGrabbing: dragRef.current.active || isFist,
+        isPointing,
+        volume: currentVol, side: 'right',
+      });
+    }
+    drawAllHands(ctx, handsDrawData);
+
+    // ── Update primary gesture state ──────────────────────────────────────
+    setPinchStr(primaryResult.pinchInfo.strength);
+    setIsPinched(primaryResult.pinchInfo.pinched);
     setGesture(prev => {
-      if (prev !== pose) {
+      const newGesture = combo || primaryResult.gesture;
+      if (prev !== newGesture) {
         setPrevGesture(prev);
         setGestureFlash(true);
         setTimeout(() => setGestureFlash(false), 350);
       }
-      return pose;
+      return newGesture;
     });
 
-    // ── Palm → screen coords ─────────────────────────────────────
-    const palm    = getPalmCenter(lm);
+    // ── Palm → screen coords (primary hand) ──────────────────────────────
+    const palm    = getPalmCenter(primaryLm);
     const panelEl = videoPanelRef.current;
     let screenX = 0, screenY = 0;
     if (panelEl) {
@@ -550,19 +838,83 @@ export default function App() {
 
     const now = Date.now();
 
-    // ══════════════════════════════════════════════════════════════
-    // OS COMMAND MAPPING
-    // ══════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════
+    // CENTRALIZED HOLD-TO-ACTIVATE SYSTEM
+    // ═════════════════════════════════════════════════════════════════════
 
-    // ── ☝️ POINT → Volume control ────────────────────────────────
-    if (isPointing) {
-      const vol = getVolumeFromIndex(lm);
+    const activeGestureKey = combo || primaryResult.gesture;
+    const activeConf       = combo
+      ? Math.min(leftResult.confidence, rightResult.confidence)
+      : primaryResult.confidence;
+
+    const actions   = gestureActionsRef.current;
+    const actionDef = actions ? actions[activeGestureKey] : null;
+
+    if (
+      actionDef &&
+      activeConf >= GESTURE_CONFIDENCE_THRESHOLD &&
+      !dragRef.current.active    // don't trigger during kanban drag
+    ) {
+      const hold = holdRef.current;
+
+      // If gesture changed, reset hold
+      if (hold.gesture !== activeGestureKey) {
+        hold.gesture   = activeGestureKey;
+        hold.startTime = now;
+        hold.locked    = false;
+      }
+
+      if (!hold.locked && hold.startTime !== null) {
+        const elapsed  = now - hold.startTime;
+        const holdMs   = actionDef.holdMs ?? GESTURE_HOLD_DURATION;
+        const progress = Math.min(100, (elapsed / holdMs) * 100);
+
+        setHoldState({
+          gesture:     activeGestureKey,
+          progress,
+          locked:      false,
+          actionLabel: actionDef.label,
+        });
+
+        if (elapsed >= holdMs) {
+          const lastFired = hold.lastFired[activeGestureKey] ?? 0;
+          if (now - lastFired > ACTION_COOLDOWN_MS) {
+            // Fire the action
+            const actionKey = actionDef.fire(isBridgeUp);
+            hold.lastFired[activeGestureKey] = now;
+            hold.locked    = true;
+            hold.startTime = null;
+
+            setSentAction({
+              action: actionKey,
+              time: new Date().toLocaleTimeString('en-US', { hour12: false }),
+            });
+            setHoldState({ gesture: activeGestureKey, progress: 100, locked: true, actionLabel: actionDef.label });
+          }
+        }
+      }
+    } else {
+      // Gesture not in action map, or confidence too low — reset hold
+      if (holdRef.current.gesture !== null) {
+        holdRef.current.gesture   = null;
+        holdRef.current.startTime = null;
+        holdRef.current.locked    = false;
+        setHoldState({ gesture: null, progress: 0, locked: false, actionLabel: '' });
+      }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════
+    // LEGACY HOLD TRACKERS (for the side panel progress bars: fistProg, peaceProg)
+    // These maintain backward compatibility with the OS Control panel display.
+    // ═════════════════════════════════════════════════════════════════════
+
+    if (primaryResult.gesture === 'POINT') {
+      const vol = getVolumeFromIndex(primaryLm);
       setVolume(vol);
       if (now - lastVolSentRef.current > VOL_THROTTLE_MS) {
         sendCommand('set_volume', { level: vol });
         lastVolSentRef.current = now;
       }
-      // Reset hold timers when switching gesture
       fistHoldStartRef.current  = null;
       peaceHoldStartRef.current = null;
       setFistProg(0);
@@ -571,58 +923,31 @@ export default function App() {
       setVolume(null);
     }
 
-    // ── ✌️ PEACE → Launch Spotify (hold 1.2s) ───────────────────
-    if (pose === 'PEACE') {
+    if (primaryResult.gesture === 'PEACE') {
       if (!peaceHoldStartRef.current) peaceHoldStartRef.current = now;
       const held     = now - peaceHoldStartRef.current;
       const progress = Math.min(100, (held / PEACE_HOLD_MS) * 100);
       setPeaceProg(progress);
-
-      if (held >= PEACE_HOLD_MS) {
-        const lastFired = lastCmdTimeRef.current['open_spotify'] ?? 0;
-        if (now - lastFired > CMD_COOLDOWN_MS) {
-          sendCommand('open_spotify');
-          lastCmdTimeRef.current['open_spotify'] = now;
-          peaceHoldStartRef.current = null;
-          setSentAction({ action: 'open_spotify', time: new Date().toLocaleTimeString('en-US', { hour12: false }) });
-        }
-      }
       fistHoldStartRef.current = null;
       setFistProg(0);
-
     } else {
       peaceHoldStartRef.current = null;
       setPeaceProg(0);
     }
 
-    // ── ✊ FIST → Launch Chrome (hold 1.5s, only if not dragging) ─
     if (isFist && !dragRef.current.active) {
       if (!fistHoldStartRef.current) fistHoldStartRef.current = now;
       const held     = now - fistHoldStartRef.current;
       const progress = Math.min(100, (held / FIST_HOLD_MS) * 100);
       setFistProg(progress);
-
-      if (held >= FIST_HOLD_MS) {
-        const lastFired = lastCmdTimeRef.current['open_chrome'] ?? 0;
-        if (now - lastFired > CMD_COOLDOWN_MS) {
-          sendCommand('open_chrome');
-          lastCmdTimeRef.current['open_chrome'] = now;
-          fistHoldStartRef.current = null;
-          setSentAction({ action: 'open_chrome', time: new Date().toLocaleTimeString('en-US', { hour12: false }) });
-        }
-      }
-    } else if (dragRef.current.active) {
-      // Dragging — don't accumulate chrome hold
-      fistHoldStartRef.current = null;
-      setFistProg(0);
-    } else if (!isFist) {
+    } else if (!isFist || dragRef.current.active) {
       fistHoldStartRef.current = null;
       setFistProg(0);
     }
 
-    // ══════════════════════════════════════════════════════════════
-    // DRAG & DROP
-    // ══════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════
+    // DRAG & DROP (primary hand)
+    // ═════════════════════════════════════════════════════════════════════
 
     if (isFist) {
       grabFramesRef.current = Math.min(grabFramesRef.current + 1, GRAB_CONFIRM_FRAMES + 10);
@@ -669,7 +994,7 @@ export default function App() {
       if (targetCol !== null) setTiles(prev => prev.map(t => t.id === droppedId ? { ...t, col: targetCol } : t));
     }
 
-    // ── Swipe (disabled while dragging or pointing) ────────────────
+    // ── Swipe ─────────────────────────────────────────────────────────────
     if (!dragRef.current.active && !isPointing) {
       palmHistoryRef.current.push({ x: palm.x, y: palm.y });
       if (palmHistoryRef.current.length > SWIPE_HISTORY_LEN) palmHistoryRef.current.shift();
@@ -683,9 +1008,9 @@ export default function App() {
         }
       }
     }
-  }, [tickFps, sendCommand]);
+  }, [tickFps, sendCommand, isBridgeUp]);
 
-  // ── MediaPipe init — direct RAF, no Camera util ──────────────────
+  // ── MediaPipe init — direct RAF, no Camera util ──────────────────────────
   useEffect(() => {
     let cancelled = false;
 
@@ -699,8 +1024,9 @@ export default function App() {
         const hands = new window.Hands({
           locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`,
         });
+        // ← KEY CHANGE: maxNumHands now 2
         hands.setOptions({
-          maxNumHands: 1, modelComplexity: 0,
+          maxNumHands: 2, modelComplexity: 0,
           minDetectionConfidence: 0.65, minTrackingConfidence: 0.55,
         });
         hands.onResults(onResults);
@@ -742,24 +1068,22 @@ export default function App() {
     };
   }, [onResults]);
 
-  // ── Screen transition ─────────────────────────────────────────────
+  // ── Screen transition ─────────────────────────────────────────────────────
   const handleLaunch = useCallback(() => {
     const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (prefersReduced) {
-      setScreen('app');
-      return;
-    }
+    if (prefersReduced) { setScreen('app'); return; }
     setScreen('transitioning');
     setTimeout(() => setScreen('app'), 700);
   }, []);
 
   // ─── Render ───────────────────────────────────────────────────────────────
-  const meta        = GESTURE_META[gesture] || GESTURE_META.NONE;
-  const draggedTile = tiles.find(t => t.id === dragState.tileId);
-  const isBridgeUp  = wsStatus === 'connected';
-
-  const displayedAction = sentAction || lastAction;
-  const actionMeta      = displayedAction ? ACTION_META[displayedAction.action] : null;
+  const displayGesture   = comboGesture || gesture;
+  const meta             = GESTURE_META[displayGesture] || GESTURE_META.NONE;
+  const draggedTile      = tiles.find(t => t.id === dragState.tileId);
+  const displayedAction  = sentAction || lastAction;
+  const actionMeta       = displayedAction ? ACTION_META[displayedAction.action] : null;
+  const totalLandmarks   = handCount * 21;
+  const gestureActions   = gestureActionsRef.current || {};
 
   return (
     <div className="app">
@@ -801,7 +1125,7 @@ export default function App() {
             </div>
             <div className="nav-logo-text">
               <span className="nav-logo-name">GESTURETOUCH-AI</span>
-              <span className="nav-logo-tag">[ LIVE TRACKING ]</span>
+              <span className="nav-logo-tag">[ DUAL-HAND TRACKING ]</span>
             </div>
           </button>
 
@@ -809,6 +1133,10 @@ export default function App() {
             <span className={`badge ${camActive ? 'active' : ''}`} id="cam-status-badge">
               <span className={`status-dot ${camActive ? 'active' : 'warning'}`} />
               {camActive ? 'Camera Active' : 'No Camera'}
+            </span>
+            <span className={`badge ${handCount === 2 ? 'active' : handCount === 1 ? 'accent' : ''}`} id="hand-count-badge-nav">
+              <span className={`status-dot ${handCount > 0 ? 'active' : ''}`} aria-hidden="true" />
+              {handCount} hand{handCount !== 1 ? 's' : ''}
             </span>
             <span className={`badge ${isBridgeUp ? 'active' : ''}`} id="bridge-status-badge">
               <span className={`status-dot ${isBridgeUp ? 'active' : 'error'}`} />
@@ -840,14 +1168,13 @@ export default function App() {
             {/* Camera */}
             <div className="video-panel" ref={videoPanelRef} id="video-panel">
 
-              {/* Reticle corners */}
               <div className="reticle-tr" aria-hidden="true" />
               <div className="reticle-bl" aria-hidden="true" />
 
               {camActive && (
                 <div className="video-label" id="video-label">
                   <span className="status-dot active" aria-hidden="true" />
-                  LIVE · 640P
+                  LIVE · 640P · {handCount > 0 ? `${handCount} HAND${handCount > 1 ? 'S' : ''}` : 'NO HANDS'}
                 </div>
               )}
               {camActive && <div className="fps-badge" id="fps-badge">{fps}</div>}
@@ -862,9 +1189,36 @@ export default function App() {
                 </div>
               )}
 
-              {/* Hold progress HUD */}
-              {(fistProg > 0 || peaceProg > 0) && (
+              {/* Hold progress HUD — centralized new system */}
+              {holdState.gesture && !holdState.locked && holdState.progress > 0 && (
                 <div className="hold-hud" id="hold-hud" role="status">
+                  <div className="hold-hud-label">
+                    HOLD · {holdState.actionLabel.toUpperCase()}
+                  </div>
+                  <div className="hold-bar-track">
+                    <div
+                      className="hold-bar-fill"
+                      style={{ width: `${holdState.progress}%` }}
+                    />
+                  </div>
+                  <div className="hold-hud-time">
+                    {((holdState.progress / 100) * (gestureActions[holdState.gesture]?.holdMs ?? GESTURE_HOLD_DURATION) / 1000).toFixed(1)}s
+                    {' / '}
+                    {((gestureActions[holdState.gesture]?.holdMs ?? GESTURE_HOLD_DURATION) / 1000).toFixed(1)}s
+                  </div>
+                </div>
+              )}
+
+              {/* Fired confirmation */}
+              {holdState.locked && (
+                <div className="hold-hud hold-hud-fired" id="hold-hud-fired" role="status">
+                  <div className="hold-hud-label">✓ {holdState.actionLabel.toUpperCase()}</div>
+                </div>
+              )}
+
+              {/* Legacy hold HUD for Spotify/Chrome (fistProg/peaceProg pathway — kept for compat) */}
+              {!holdState.gesture && (fistProg > 0 || peaceProg > 0) && (
+                <div className="hold-hud hold-hud-legacy" id="hold-hud-legacy" role="status">
                   <div className="hold-hud-label">
                     {fistProg > 0 ? 'CHROME HOLD' : 'SPOTIFY HOLD'}
                   </div>
@@ -923,6 +1277,11 @@ export default function App() {
                   setPeaceProg(0);
                   setSentAction(null);
                   setTiles(INIT_TILES);
+                  setLeftHand({ detected: false, gesture: 'NONE', confidence: 0 });
+                  setRightHand({ detected: false, gesture: 'NONE', confidence: 0 });
+                  setComboGesture(null);
+                  setHoldState({ gesture: null, progress: 0, locked: false, actionLabel: '' });
+                  holdRef.current = { gesture: null, startTime: null, locked: false, lastFired: {} };
                 }}
                 aria-label="Reset gesture state and event log"
               >
@@ -938,7 +1297,7 @@ export default function App() {
                 <span className="hero-terminal-prompt">&gt;</span>
                 <span className="hero-terminal-text" style={{ fontSize: '0.7rem' }}>
                   {handCount > 0
-                    ? `${gesture.replace('_', ' ')} detected · ${handCount} hand · ${fps} fps`
+                    ? `${handCount > 1 ? `L:${leftHand.gesture} R:${rightHand.gesture}` : displayGesture.replace('_', ' ')} · ${handCount} hand${handCount > 1 ? 's' : ''} · ${fps} fps`
                     : camActive
                     ? `tracking active · awaiting hand · ${fps} fps`
                     : `camera initializing…`
@@ -979,47 +1338,71 @@ export default function App() {
           {/* ── Side panel ── */}
           <aside className="side-panel" aria-label="Gesture status and controls">
 
-            {/* Gesture readout */}
+            {/* ── LIVE TRACKING card — two-hand readout ── */}
             <div className="float-card status-card" id="gesture-status-card">
               <div className="status-card-header">
-                <span className="status-label">[ GESTURE ]</span>
+                <span className="status-label">[ LIVE TRACKING ]</span>
                 <span className={`badge ${handCount > 0 ? 'active' : ''}`} id="hand-count-badge">
                   <span className={`status-dot ${handCount > 0 ? 'active' : ''}`} aria-hidden="true" />
                   {handCount} hand{handCount !== 1 ? 's' : ''}
                 </span>
               </div>
 
-              <div className={`gesture-display ${dragState.active ? 'grabbing' : ''}`} id="gesture-display">
-                {/* emoji hidden in dark design — kept for DOM compat */}
-                <span className="gesture-emoji" id="gesture-emoji" aria-hidden="true">{meta.emoji}</span>
-                <div
-                  className={`gesture-name ${gestureFlash ? 'flash' : ''}`}
-                  id="gesture-name"
-                  aria-live="polite"
-                  aria-label={`Current gesture: ${dragState.active ? `Dragging ${draggedTile?.label}` : meta.label}`}
-                >
-                  {dragState.active ? `DRAG / ${draggedTile?.label?.toUpperCase()}` : meta.label.toUpperCase()}
-                </div>
-                <div className="gesture-sub" id="gesture-sub">
-                  {dragState.active ? 'Open hand to drop' : meta.sub}
-                </div>
+              {/* Per-hand sections */}
+              <div className="hands-row" id="hands-row">
+                <HandSection
+                  side="left"
+                  detected={leftHand.detected}
+                  gesture={leftHand.gesture}
+                  confidence={leftHand.confidence}
+                />
+                <HandSection
+                  side="right"
+                  detected={rightHand.detected}
+                  gesture={rightHand.gesture}
+                  confidence={rightHand.confidence}
+                />
               </div>
 
-              <div style={{ marginTop: 16 }}>
-                <div className="stat-row">
-                  <span className="stat-key">CONFIDENCE</span>
-                  <span className="stat-val" id="pinch-stat">{Math.round(pinchStr * 100)}%</span>
+              {/* Combo badge */}
+              {comboGesture && (
+                <div className="combo-badge" id="combo-badge" role="status" aria-live="polite">
+                  <span className="combo-icon" aria-hidden="true">⚡</span>
+                  <span className="combo-label">{(GESTURE_META[comboGesture]?.label || comboGesture).toUpperCase()}</span>
                 </div>
-                <div className="strength-bar-track">
-                  <div className="strength-bar-fill" style={{ width: `${pinchStr * 100}%` }} />
+              )}
+
+              {/* Legacy big gesture display (single-hand mode) */}
+              {!comboGesture && (
+                <div className={`gesture-display ${dragState.active ? 'grabbing' : ''}`} id="gesture-display">
+                  <span className="gesture-emoji" id="gesture-emoji" aria-hidden="true">{meta.emoji}</span>
+                  <div
+                    className={`gesture-name ${gestureFlash ? 'flash' : ''}`}
+                    id="gesture-name"
+                    aria-live="polite"
+                    aria-label={`Current gesture: ${dragState.active ? `Dragging ${draggedTile?.label}` : meta.label}`}
+                  >
+                    {dragState.active ? `DRAG / ${draggedTile?.label?.toUpperCase()}` : meta.label.toUpperCase()}
+                  </div>
+                  <div className="gesture-sub" id="gesture-sub">
+                    {dragState.active ? 'Open hand to drop' : meta.sub}
+                  </div>
+                </div>
+              )}
+
+              {/* Stats */}
+              <div style={{ marginTop: 14 }}>
+                <div className="stat-row">
+                  <span className="stat-key">HANDS</span>
+                  <span className="stat-val" id="hand-count-stat">{handCount}</span>
+                </div>
+                <div className="stat-row">
+                  <span className="stat-key">LANDMARKS</span>
+                  <span className="stat-val" id="landmark-stat">{totalLandmarks}</span>
                 </div>
                 <div className="stat-row">
                   <span className="stat-key">FPS</span>
                   <span className="stat-val" id="fps-stat">{fps}</span>
-                </div>
-                <div className="stat-row">
-                  <span className="stat-key">LANDMARKS</span>
-                  <span className="stat-val">{handCount > 0 ? '21 / 21' : '0 / 21'}</span>
                 </div>
                 <div className="stat-row">
                   <span className="stat-key">MODEL</span>
@@ -1034,7 +1417,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* System Control card */}
+            {/* ── OS CONTROL card ── */}
             <div className="float-card sys-card" id="sys-control-card">
               <div className="sys-card-header">
                 <span className="status-label">[ OS CONTROL ]</span>
@@ -1074,6 +1457,38 @@ export default function App() {
 
               {/* OS Actions */}
               <div className="sys-actions" id="sys-actions">
+                {/* Excel */}
+                <div
+                  className={`sys-action-row ${holdState.gesture === 'DOUBLE_THUMBS_UP' && !holdState.locked ? 'primed' : ''}`}
+                  id="action-excel" role="status"
+                >
+                  <span className="sys-action-emoji" aria-hidden="true">📊</span>
+                  <div className="sys-action-body">
+                    <div className="sys-action-name">Open Excel</div>
+                    <div className="sys-action-hint">👍👍 Both Thumbs Up · 1.5s</div>
+                    <div className="hold-track">
+                      <div className="hold-fill" style={{ width: holdState.gesture === 'DOUBLE_THUMBS_UP' ? `${holdState.progress}%` : '0%' }} />
+                    </div>
+                  </div>
+                  {holdState.gesture === 'DOUBLE_THUMBS_UP' && holdState.locked && <span className="sys-action-sent" aria-label="Command sent">✓</span>}
+                </div>
+
+                {/* PowerPoint */}
+                <div
+                  className={`sys-action-row ${holdState.gesture === 'DOUBLE_PEACE' && !holdState.locked ? 'primed' : ''}`}
+                  id="action-powerpoint" role="status"
+                >
+                  <span className="sys-action-emoji" aria-hidden="true">📊</span>
+                  <div className="sys-action-body">
+                    <div className="sys-action-name">Open PowerPoint</div>
+                    <div className="sys-action-hint">✌✌ Both Peace · 1.5s</div>
+                    <div className="hold-track">
+                      <div className="hold-fill" style={{ width: holdState.gesture === 'DOUBLE_PEACE' ? `${holdState.progress}%` : '0%' }} />
+                    </div>
+                  </div>
+                  {holdState.gesture === 'DOUBLE_PEACE' && holdState.locked && <span className="sys-action-sent" aria-label="Command sent">✓</span>}
+                </div>
+
                 {/* Chrome */}
                 <div className={`sys-action-row ${fistProg > 0 ? 'primed' : ''}`} id="action-chrome" role="status">
                   <span className="sys-action-emoji" aria-hidden="true">🌐</span>
@@ -1111,7 +1526,30 @@ export default function App() {
               )}
             </div>
 
-            {/* Event log */}
+            {/* ── GESTURE COMMANDS card ── */}
+            <div className="float-card controls-card" id="gesture-commands-card">
+              <div className="controls-title">[ GESTURE COMMANDS ]</div>
+              <div className="controls-grid">
+                {[
+                  ['👍👍', 'DOUBLE THUMBS UP', '→ Excel'],
+                  ['✌✌',  'DOUBLE PEACE',      '→ PowerPoint'],
+                  ['✌',   'PEACE',             '→ Spotify'],
+                  ['✊',   'FIST',              '→ Chrome'],
+                  ['☝',   'POINT',             '→ Volume'],
+                  ['👍',   'THUMBS UP',         '→ Confirm'],
+                  ['👎',   'THUMBS DOWN',       '→ Cancel'],
+                  ['🖐',   'OPEN PALM',         '→ Stop'],
+                  ['🤘',   'ROCK',              '→ Rock on'],
+                ].map(([emoji, name, hint]) => (
+                  <div key={name} className="control-item" id={`ref-${name.toLowerCase().replace(/ /g, '-')}`}>
+                    <span className="control-label">{emoji} {name}</span>
+                    <span className="control-kbd">{hint}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── EVENT LOG ── */}
             <div className="float-card log-card" id="swipe-log-card">
               <div className="log-card-title">[ EVENT LOG ]</div>
               <div className="log-list" id="swipe-log-list" role="log" aria-live="polite" aria-label="Swipe events">
@@ -1125,25 +1563,6 @@ export default function App() {
                       </div>
                     ))
                 }
-              </div>
-            </div>
-
-            {/* Gesture map */}
-            <div className="float-card controls-card" id="gesture-ref-card">
-              <div className="controls-title">[ GESTURE MAP ]</div>
-              <div className="controls-grid">
-                {[
-                  ['☝', 'POINT',     '→ Volume'],
-                  ['✌', 'PEACE',     '→ Spotify'],
-                  ['✊', 'FIST',      '→ Chrome'],
-                  ['🤌', 'PINCH',    '→ Select'],
-                  ['🖐', 'OPEN HAND', '→ Drop'],
-                ].map(([emoji, name, hint]) => (
-                  <div key={name} className="control-item" id={`ref-${name.toLowerCase().replace(/ /g, '-')}`}>
-                    <span className="control-label">{emoji} {name}</span>
-                    <span className="control-kbd">{hint}</span>
-                  </div>
-                ))}
               </div>
             </div>
 
