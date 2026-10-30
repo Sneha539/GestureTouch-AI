@@ -19,6 +19,8 @@ import {
   ACTION_COOLDOWN_MS,
 } from './gestureEngine';
 import { useSystemBridge } from './useSystemBridge';
+import { CONTROL_MODES, CONTROL_STATES, DEFAULT_GESTURE_CONFIG } from './gestureConfig';
+import { SystemControlEngine } from './systemControlEngine';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const SWIPE_HISTORY_LEN   = 10;
@@ -605,6 +607,12 @@ export default function App() {
   const [screen,       setScreen]       = useState('hero');
   const [camActive,    setCamActive]    = useState(false);
   const [camError,     setCamError]     = useState(null);
+  const [camRetryKey,  setCamRetryKey]  = useState(0);
+
+  const handleRetryCamera = useCallback(() => {
+    setCamError(null);
+    setCamRetryKey(k => k + 1);
+  }, []);
 
   // Primary (single-hand) gesture state — used for Kanban & volume (backward compat)
   const [gesture,      setGesture]      = useState('NONE');
@@ -634,14 +642,79 @@ export default function App() {
   const [gestureFlash, setGestureFlash] = useState(false);
 
   // System bridge
-  const { wsStatus, lastAction, sendCommand } = useSystemBridge();
+  const {
+    wsStatus,
+    capabilities,
+    systemVolume,
+    systemMuted,
+    systemBrightness,
+    lastAction,
+    sendCommand,
+  } = useSystemBridge();
   const isBridgeUp = wsStatus === 'connected';
+
+  // System control engine instance
+  const systemEngineRef = useRef(new SystemControlEngine());
+  const [sysEnabled, setSysEnabled] = useState(false);
+  const [activeSysMode, setActiveSysMode] = useState(CONTROL_MODES.VOLUME);
+  const [sysReport, setSysReport] = useState(() => ({
+    mode: CONTROL_MODES.VOLUME,
+    state: CONTROL_STATES.DISABLED,
+    action: 'DISABLED',
+    level: null,
+    hand: '—',
+    isLocked: false,
+    holdProgress: 0,
+  }));
+
+  const handleToggleSysControl = useCallback(() => {
+    setSysEnabled(prev => {
+      const next = !prev;
+      systemEngineRef.current.setEnabled(next);
+      setSysReport(r => ({
+        ...r,
+        state: next ? CONTROL_STATES.READY : CONTROL_STATES.DISABLED,
+        action: next ? 'ENABLED' : 'DISABLED',
+      }));
+      return next;
+    });
+  }, []);
+
+  const handleSelectSysMode = useCallback((mode) => {
+    setActiveSysMode(mode);
+    systemEngineRef.current.setMode(mode);
+    setSysReport(r => ({
+      ...r,
+      mode,
+      action: 'MODE_CHANGED',
+    }));
+  }, []);
 
   // Gesture actions (memoized so sendCommand reference is stable)
   const gestureActionsRef = useRef(null);
   useEffect(() => {
     gestureActionsRef.current = buildGestureActions(sendCommand);
   }, [sendCommand]);
+
+  // Synchronize latest system status in ref for stable onResults RAF loop
+  const systemStatusRef = useRef({
+    isBridgeUp,
+    systemVolume,
+    systemBrightness,
+    systemMuted,
+    capabilities,
+    sysEnabled,
+  });
+  useEffect(() => {
+    systemStatusRef.current = {
+      isBridgeUp,
+      systemVolume,
+      systemBrightness,
+      systemMuted,
+      capabilities,
+      sysEnabled,
+    };
+  }, [isBridgeUp, systemVolume, systemBrightness, systemMuted, capabilities, sysEnabled]);
 
   // ── FPS ───────────────────────────────────────────────────────────────────
   const tickFps = useCallback(() => {
@@ -705,6 +778,15 @@ export default function App() {
       holdRef.current.startTime = null;
       holdRef.current.locked    = false;
       setHoldState({ gesture: null, progress: 0, locked: false, actionLabel: '' });
+
+      // Reset system control engine
+      systemEngineRef.current.reset();
+      setSysReport(r => ({
+        ...r,
+        state: systemStatusRef.current.sysEnabled ? CONTROL_STATES.PAUSED : CONTROL_STATES.DISABLED,
+        action: 'NO_HAND',
+        hand: '—',
+      }));
       return;
     }
 
@@ -834,6 +916,27 @@ export default function App() {
       const rect = panelEl.getBoundingClientRect();
       screenX = rect.left + (1 - palm.x) * rect.width;
       screenY = rect.top  + palm.y * rect.height;
+    }
+
+    // ── Process System-Wide Control Engine ───────────────────────────────
+    if (primaryLm && palm) {
+      const sysStatus = systemStatusRef.current;
+      const report = systemEngineRef.current.processFrame({
+        landmarks: primaryLm,
+        palmCenter: palm,
+        gesture: primaryResult.gesture,
+        confidence: primaryResult.confidence,
+        handSide: primarySide.toUpperCase(),
+        isBridgeOnline: sysStatus.isBridgeUp,
+        systemStatus: {
+          volume: sysStatus.systemVolume,
+          brightness: sysStatus.systemBrightness,
+          muted: sysStatus.systemMuted,
+          capabilities: sysStatus.capabilities,
+        },
+        sendCommand,
+      });
+      setSysReport(report);
     }
 
     const now = Date.now();
@@ -1066,7 +1169,7 @@ export default function App() {
       const v = videoRef.current;
       if (v?.srcObject) { v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
     };
-  }, [onResults]);
+  }, [onResults, camRetryKey]);
 
   // ── Screen transition ─────────────────────────────────────────────────────
   const handleLaunch = useCallback(() => {
@@ -1189,6 +1292,25 @@ export default function App() {
                 </div>
               )}
 
+              {/* Brightness HUD overlay */}
+              {sysEnabled && activeSysMode === CONTROL_MODES.BRIGHTNESS && sysReport.level !== null && (
+                <div className="bright-hud" id="bright-hud" role="status" aria-label={`Brightness: ${sysReport.level}%`}>
+                  <span className="bright-hud-icon" aria-hidden="true">☀️</span>
+                  <div className="bright-hud-track">
+                    <div className="bright-hud-fill" style={{ width: `${sysReport.level}%` }} />
+                  </div>
+                  <span className="bright-hud-label">{sysReport.level}%</span>
+                </div>
+              )}
+
+              {/* Scroll HUD overlay */}
+              {sysEnabled && activeSysMode === CONTROL_MODES.SCROLL && sysReport.action && sysReport.action.startsWith('SCROLLING') && (
+                <div className="scroll-hud" id="scroll-hud" role="status">
+                  <span>↕️</span>
+                  <span>{sysReport.action}</span>
+                </div>
+              )}
+
               {/* Hold progress HUD — centralized new system */}
               {holdState.gesture && !holdState.locked && holdState.progress > 0 && (
                 <div className="hold-hud" id="hold-hud" role="status">
@@ -1256,7 +1378,20 @@ export default function App() {
                   </svg>
                 </div>
                 {camError
-                  ? <><span className="overlay-title">Camera Unavailable</span><span className="overlay-sub">{camError}</span></>
+                  ? (
+                    <>
+                      <span className="overlay-title">Camera Unavailable</span>
+                      <span className="overlay-sub">{camError}</span>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        id="btn-retry-camera"
+                        onClick={handleRetryCamera}
+                        style={{ marginTop: 12, padding: '6px 14px', fontSize: '0.75rem' }}
+                      >
+                        Retry Camera ↻
+                      </button>
+                    </>
+                  )
                   : <><span className="overlay-title">Initializing…</span><span className="overlay-sub">Loading MediaPipe · Allow camera access</span></>
                 }
               </div>
@@ -1282,6 +1417,14 @@ export default function App() {
                   setComboGesture(null);
                   setHoldState({ gesture: null, progress: 0, locked: false, actionLabel: '' });
                   holdRef.current = { gesture: null, startTime: null, locked: false, lastFired: {} };
+                  systemEngineRef.current.reset();
+                  setSysReport(r => ({
+                    ...r,
+                    state: systemStatusRef.current.sysEnabled ? CONTROL_STATES.READY : CONTROL_STATES.DISABLED,
+                    action: 'RESET',
+                    level: null,
+                    hand: '—',
+                  }));
                 }}
                 aria-label="Reset gesture state and event log"
               >
@@ -1417,39 +1560,140 @@ export default function App() {
               </div>
             </div>
 
-            {/* ── OS CONTROL card ── */}
+            {/* ── [ SYSTEM CONTROL ] card ── */}
             <div className="float-card sys-card" id="sys-control-card">
-              <div className="sys-card-header">
-                <span className="status-label">[ OS CONTROL ]</span>
-                <span className={`badge ${isBridgeUp ? 'active' : 'danger'}`}>
-                  <span className={`status-dot ${isBridgeUp ? 'active' : 'error'}`} aria-hidden="true" />
-                  {isBridgeUp ? 'Online' : 'Offline'}
-                </span>
+              <div className="sys-ctrl-header">
+                <div className="sys-ctrl-title-wrap">
+                  <span className="status-label">[ SYSTEM CONTROL ]</span>
+                  <span className={`badge ${isBridgeUp ? 'active' : 'accent'}`} id="sys-bridge-mode-badge">
+                    <span className={`status-dot ${isBridgeUp ? 'active' : 'warning'}`} aria-hidden="true" />
+                    {isBridgeUp ? 'System-Wide (OS)' : 'Browser-Only'}
+                  </span>
+                </div>
+                <button
+                  className={`sys-master-toggle ${sysEnabled ? 'enabled' : 'disabled'}`}
+                  id="btn-toggle-system-control"
+                  onClick={handleToggleSysControl}
+                  aria-label={sysEnabled ? 'Disable gesture control' : 'Enable gesture control'}
+                >
+                  <span className={`status-dot ${sysEnabled ? 'active' : ''}`} aria-hidden="true" />
+                  {sysEnabled ? 'ENABLED' : 'DISABLED'}
+                </button>
               </div>
 
               {!isBridgeUp && (
                 <div className="bridge-offline-hint" id="bridge-offline-hint" role="note">
-                  Run <code>python server.py</code> to enable OS control
+                  Companion offline — falling back to browser-mode controls (web scroll & MediaSession). Run <code>python server.py</code> for host OS control.
                 </div>
               )}
 
-              {/* Volume display */}
+              {/* Mode selector: VOLUME · BRIGHTNESS · SCROLL · MEDIA */}
+              <div className="sys-mode-selector" role="tablist" aria-label="System control modes">
+                {[
+                  { id: CONTROL_MODES.VOLUME,     label: 'VOLUME',     icon: '🔊' },
+                  { id: CONTROL_MODES.BRIGHTNESS, label: 'BRIGHTNESS', icon: '☀️' },
+                  { id: CONTROL_MODES.SCROLL,     label: 'SCROLL',     icon: '↕️' },
+                  { id: CONTROL_MODES.MEDIA,      label: 'MEDIA',      icon: '⏯️' },
+                ].map(m => (
+                  <button
+                    key={m.id}
+                    role="tab"
+                    aria-selected={activeSysMode === m.id}
+                    id={`btn-mode-${m.id.toLowerCase()}`}
+                    className={`sys-mode-btn ${activeSysMode === m.id ? 'active' : ''}`}
+                    onClick={() => handleSelectSysMode(m.id)}
+                  >
+                    <span aria-hidden="true">{m.icon}</span>
+                    <span>{m.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Monospace Telemetry Readout Table */}
+              <div className="sys-telemetry-box" id="sys-telemetry-box">
+                <div className="sys-telemetry-grid">
+                  <div className="sys-telemetry-row">
+                    <span className="sys-telemetry-key">MODE</span>
+                    <span className="sys-telemetry-val accent" id="sys-val-mode">{sysReport.mode}</span>
+                  </div>
+                  <div className="sys-telemetry-row">
+                    <span className="sys-telemetry-key">STATUS</span>
+                    <span className={`sys-telemetry-val ${sysReport.state === 'ACTIVE' ? 'active' : sysReport.state === 'DISABLED' ? '' : 'warning'}`} id="sys-val-status">
+                      {sysReport.state}
+                    </span>
+                  </div>
+                  <div className="sys-telemetry-row">
+                    <span className="sys-telemetry-key">INPUT</span>
+                    <span className="sys-telemetry-val" id="sys-val-input">
+                      {sysReport.hand !== '—' ? `${sysReport.hand} HAND` : '—'}
+                    </span>
+                  </div>
+                  <div className="sys-telemetry-row">
+                    <span className="sys-telemetry-key">ACTION</span>
+                    <span className={`sys-telemetry-val ${sysReport.action.includes('(+)') ? 'active' : sysReport.action.includes('(-)') ? 'warning' : sysReport.action === 'LOCKED' ? 'accent' : ''}`} id="sys-val-action">
+                      {sysReport.action}
+                    </span>
+                  </div>
+                  <div className="sys-telemetry-row">
+                    <span className="sys-telemetry-key">LEVEL</span>
+                    <span className="sys-telemetry-val" id="sys-val-level">
+                      {sysReport.level !== null && typeof sysReport.level === 'number'
+                        ? `${sysReport.level}${activeSysMode === CONTROL_MODES.SCROLL ? ' px/s' : '%'}`
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Telemetry live progress bar */}
+                {typeof sysReport.level === 'number' && (
+                  <div className="sys-telemetry-bar-wrap">
+                    <div className="sys-telemetry-bar-track">
+                      <div
+                        className={`sys-telemetry-bar-fill ${activeSysMode === CONTROL_MODES.BRIGHTNESS ? 'warning' : 'success'}`}
+                        style={{ width: `${Math.min(100, Math.max(0, sysReport.level))}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Mode gesture-to-action hint summary */}
+              <div className="sys-mode-hint" id="sys-mode-hint">
+                {DEFAULT_GESTURE_CONFIG.mappings[activeSysMode]?.description}
+              </div>
+
+              {/* Integration / Capabilities status */}
+              <div className="sys-integration-pill" id="sys-integration-pill">
+                <div className="sys-integration-status">
+                  <span className={`status-dot ${isBridgeUp ? 'active' : 'warning'}`} aria-hidden="true" />
+                  <span>{isBridgeUp ? 'HOST INTEGRATION: CONNECTED' : 'BROWSER MODE (NO BRIDGE)'}</span>
+                </div>
+                <span style={{ color: 'var(--text-dim)' }}>
+                  {isBridgeUp
+                    ? `${capabilities.volume ? 'VOL ' : ''}${capabilities.brightness ? 'BRIGHT ' : ''}${capabilities.scroll ? 'SCROLL ' : ''}${capabilities.media ? 'MEDIA' : ''}`
+                    : 'WEB ACTIONS ONLY'}
+                </span>
+              </div>
+
+              {/* Preserved Master Volume display */}
               <div className="sys-vol-row">
                 <div className="sys-vol-bar-wrap">
                   <div className="sys-vol-bar-track">
                     <div
                       className="sys-vol-bar-fill"
                       id="sys-vol-bar"
-                      style={{ height: volume !== null ? `${volume}%` : '0%' }}
+                      style={{ height: (sysReport.mode === CONTROL_MODES.VOLUME && sysReport.level !== null) ? `${sysReport.level}%` : (volume !== null ? `${volume}%` : '0%') }}
                     />
                   </div>
                 </div>
                 <div className="sys-vol-info">
-                  <div className="sys-vol-num" id="sys-vol-num" aria-live="polite" aria-label={`Volume: ${volume !== null ? volume + '%' : 'inactive'}`}>
-                    {volume !== null ? `${volume}%` : '—'}
+                  <div className="sys-vol-num" id="sys-vol-num" aria-live="polite" aria-label={`Volume: ${sysReport.mode === CONTROL_MODES.VOLUME && sysReport.level !== null ? sysReport.level : (volume !== null ? volume : 0)}%`}>
+                    {sysReport.mode === CONTROL_MODES.VOLUME && sysReport.level !== null
+                      ? `${sysReport.level}%`
+                      : (volume !== null ? `${volume}%` : '—')}
                   </div>
-                  <div className="sys-vol-label-text">VOLUME</div>
-                  <div className="sys-vol-hint">☝ Point up/down</div>
+                  <div className="sys-vol-label-text">{sysReport.mode === CONTROL_MODES.VOLUME && sysReport.isLocked ? 'VOLUME (LOCKED)' : 'VOLUME'}</div>
+                  <div className="sys-vol-hint">🖐 Open palm to move · 🤌 Pinch to lock</div>
                 </div>
               </div>
 

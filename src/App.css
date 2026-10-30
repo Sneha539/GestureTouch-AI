@@ -1510,3 +1510,271 @@
   border-color: var(--accent-border);
   background: var(--accent-soft);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   SYSTEM-WIDE GESTURE CONTROL PANEL & HUDS
+   ═══════════════════════════════════════════════════════════ */
+
+/* ─── Control Header ─────────────────────────────────────── */
+.sys-ctrl-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.sys-ctrl-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sys-master-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-mid);
+  background: var(--panel-subtle);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.sys-master-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.sys-master-toggle.enabled {
+  background: var(--green-soft);
+  border-color: rgba(61, 214, 140, 0.4);
+  color: var(--green);
+}
+.sys-master-toggle.disabled {
+  background: var(--panel-subtle);
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+
+/* ─── Mode Selector ──────────────────────────────────────── */
+.sys-mode-selector {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  background: var(--panel-subtle);
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.sys-mode-btn {
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 7px 4px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transition: all var(--transition);
+  text-align: center;
+}
+.sys-mode-btn:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+.sys-mode-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+  box-shadow: 0 0 12px rgba(76, 141, 255, 0.15);
+}
+
+/* ─── Monospace Telemetry Readout Table ─────────────────── */
+.sys-telemetry-box {
+  background: var(--panel-subtle);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.sys-telemetry-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.sys-telemetry-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+}
+
+.sys-telemetry-key {
+  color: var(--text-dim);
+  font-weight: 500;
+  text-transform: uppercase;
+}
+
+.sys-telemetry-val {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.sys-telemetry-val.active {
+  color: var(--green);
+}
+.sys-telemetry-val.accent {
+  color: var(--accent);
+}
+.sys-telemetry-val.warning {
+  color: var(--amber);
+}
+.sys-telemetry-val.danger {
+  color: var(--danger);
+}
+
+/* ─── Live Bar Visualizer in Telemetry ───────────────────── */
+.sys-telemetry-bar-wrap {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sys-telemetry-bar-track {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+
+.sys-telemetry-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 120ms ease-out;
+}
+.sys-telemetry-bar-fill.warning {
+  background: var(--amber);
+}
+.sys-telemetry-bar-fill.success {
+  background: var(--green);
+}
+
+/* ─── Mode Hint & Mappings Summary ───────────────────────── */
+.sys-mode-hint {
+  font-family: var(--font);
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+.sys-mode-hint strong {
+  color: var(--text-primary);
+}
+
+/* ─── Integration Pill ───────────────────────────────────── */
+.sys-integration-pill {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: var(--panel-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  margin-bottom: 12px;
+}
+
+.sys-integration-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+/* ─── In-Camera HUDs for Brightness & Scroll ──────────────── */
+.bright-hud {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(10, 11, 15, 0.85);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  backdrop-filter: blur(8px);
+  z-index: 10;
+  pointer-events: none;
+}
+.bright-hud-icon {
+  font-size: 0.85rem;
+}
+.bright-hud-track {
+  width: 60px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.bright-hud-fill {
+  height: 100%;
+  background: #F0A429;
+  border-radius: 2px;
+  transition: width 120ms ease-out;
+}
+.bright-hud-label {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.scroll-hud {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(10, 11, 15, 0.88);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-pill);
+  padding: 6px 14px;
+  backdrop-filter: blur(8px);
+  z-index: 10;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
